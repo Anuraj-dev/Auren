@@ -38,7 +38,7 @@ Always present:
 | `voiceName` | Supertonic voice (`F2`, `M3`, …) |
 | `voices` | Voices available |
 | `tts` | `{speed, steps, volume, pause}` |
-| `safety` | Approval level: `ask`, `task` or `free` ([safety.md](safety.md#approval-levels)) |
+| `safety` | Approval level: `ask`, `task`, `free` or `never` ([safety.md](safety.md#approval-levels)) |
 
 Sometimes present:
 
@@ -69,7 +69,7 @@ the reply is one line. It exits 1 when the daemon isn't running.
 | `brain auto\|claude\|codex` | Brain mode |
 | `effort low\|medium\|high\|xhigh\|max` | Claude's effort (fresh conversation) |
 | `codex-effort minimal\|low\|medium\|high\|xhigh` | Codex's effort (from its next answer) |
-| `safety ask\|task\|free` | How much Auren asks before risky actions (saved in `config.toml`) |
+| `safety ask\|task\|free\|never` | How much Auren asks before risky actions (saved in `config.toml`) |
 | `yes` / `no` | Answer the question(s) it is waiting on (the bubble's and the panel's buttons send these; bind them to keys if you like). The reply says how many were approved or dropped, or that nothing is waiting |
 | `status` | JSON: state, brain, mode, effort, voice, safety |
 | `reload` | Re-read `config.toml` and the vocabulary and apply what changed (`auren config` and `auren vocab` send it) |
