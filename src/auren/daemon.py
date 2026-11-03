@@ -40,7 +40,7 @@ import re
 import time
 
 from . import notice
-from .brain import Brain, BrainError, Interrupted
+from .brain import Brain, BrainError, Interrupted, prompt
 from .config import LOCK, RUNTIME_DIR, SOCKET, STATE_DIR, STATE_FILE, TOOLS_SOCKET
 from .ears import Listening, vocabulary
 from .live import Level, describe, notice_kind
@@ -420,21 +420,20 @@ class Daemon:
         self.level.set(0)
         if session.held_seconds < MIN_HOLD:
             await session.cancel()
-            if not self._blind_end(False, "key tap too short to hear anything"):
-                self.set_state("idle", "key tap ignored")
+            if self.tools.blindfold:
+                return self._blind_default("key tap")
+            self.set_state("idle", "key tap ignored")
             return "too short"
         t = time.perf_counter()
         text = await session.finish()
         heard_in = time.perf_counter() - t
+        if not text and self.tools.blindfold:
+            return self._blind_default(f"mic: {session.error}" if session.error else "heard nothing")
         if session.error and not text:
-            if self._blind_end(False, f"couldn't hear: {session.error}"):
-                return "error"
             self.set_state("error", session.error)
             notice.notify("Auren couldn't hear you", session.error, "error")
             return "error"
         if not text:
-            if self._blind_end(False, "heard nothing"):
-                return "heard nothing"
             self.set_state("idle", "heard nothing")
             notice.show("Didn't catch that", "unheard")
             return "heard nothing"
@@ -486,6 +485,13 @@ class Daemon:
                 await self._answer(answer == "yes", source, text, heard_s)
             else:
                 await self._think(text, source, heard_s)
+
+    def _blind_default(self, why: str) -> str:
+        """Blindfold: the talk key without words (a double tap, silence, or a mic that failed) means the default
+        job, answering the question on screen; the screen is all it needs."""
+        log.info("blindfold: no words (%s), answering what's on screen", why)
+        asyncio.create_task(self.respond(prompt.BLINDFOLD_DEFAULT, source="voice"))
+        return "heard: " + prompt.BLINDFOLD_DEFAULT
 
     async def _respond_blind(self, text: str, source: str, heard_s: float | None) -> None:
         """Blindfold mode: no questions to answer (it asks none), nothing said; the bar shows how it went."""

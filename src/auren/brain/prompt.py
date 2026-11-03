@@ -92,9 +92,13 @@ APPROVALS = {
 }
 
 
+# Blindfold mode: what the talk key without words asks for (a double tap, or silence).
+BLINDFOLD_DEFAULT = "Answer the question on my screen."
+
 # Blindfold mode (docs/blindfold.md). The daemon reads the reply: "ok", or "failed: why"; anything else is a failure.
 BLINDFOLD = """Blindfold mode: nothing you say is spoken or shown, and nobody near the user should notice you. Your final reply is only a status for the bar: exactly "ok" when the job is done and checked, or "failed: <a few words why>".
 - The request is about what is on the screen right now. Start with look_at_screen and work in the focused window.
+- By default the job is to answer the question on the screen: when the transcript is the default request, a few vague words ("do it", "this one", "next"), or misheard noise, find the question in the focused window and answer it. Do something else only when the words clearly ask for it.
 - Never ask the user anything. If the request is unclear, do the most sensible thing the screen and the words point to; if nothing sensible fits, reply failed.
 - Stay where the user is: never launch apps, open URLs or tabs, switch windows or workspaces, or bring anything to the front.
 - When the screen shows a question, work out the answer and enter it in that window: click the field or option, then type_text. Never paste or use the clipboard. Don't submit or send unless the user asked.

@@ -22,6 +22,10 @@ accept that whatever the brain is talked into, by the screen or by a misheard wo
 
 ## What it forces
 
+- **Answering the question on screen is the default job.** Super+A pressed twice without a word (a quick
+  double tap, or silence in between), or a microphone that fails before any words, sends
+  "Answer the question on my screen." (`BLINDFOLD_DEFAULT`). Vague words ("do it", "this one") mean the same.
+  Only words that clearly ask for something else change the job.
 - **The screen is the context.** Each message carries a `<blindfold>` note (`BLINDFOLD` in
   `src/auren/brain/prompt.py`) that overrides the spoken-reply rules: start with `look_at_screen`, work in
   the focused window, never ask, look again after acting, and end with exactly `ok` or `failed: <why>`.
@@ -53,8 +57,8 @@ Hover shows why it failed. `state.json` carries `blindfold`, `blindfoldResult` (
 
 Red means any of: the brain replied `failed: …` or anything other than `ok`; a brain error (not logged in,
 a limit, no brain available); an unexpected error; no reply within 5 minutes (`BLINDFOLD_TIMEOUT`; the brain
-and its tools are stopped); a key tap too short to hear; the microphone failing; an empty transcript; or
-the request being cancelled. A refused tool that left the job unfinished shows up as the brain's
+and its tools are stopped); or the request being cancelled. No words is not a failure: it asks for the
+default job. A refused tool that left the job unfinished shows up as the brain's
 `failed: …`.
 
 ## Limits

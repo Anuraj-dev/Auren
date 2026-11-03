@@ -238,19 +238,30 @@ class _Heard:
         pass
 
 
-@pytest.mark.parametrize(("session", "reason"), [
-    (_Heard(""), "heard nothing"),
-    (_Heard("", error="mic busy"), "couldn't hear: mic busy"),
-    (_Heard("", held=0.1), "key tap too short to hear anything"),
+@pytest.mark.parametrize("session", [
+    _Heard(""), _Heard("", error="mic busy"), _Heard("", held=0.1),
 ])
-def test_an_empty_or_unheard_transcript_ends_red(run, _no_notices, session, reason):
+def test_the_talk_key_without_words_answers_the_question_on_screen(run, _no_notices, session):
     async def scenario(d):
         await d.command("blindfold on")
         d.listening = session
-        await d.release()
+        assert await d.release() == "heard: " + prompt.BLINDFOLD_DEFAULT
+        await asyncio.sleep(0)                            # the request runs as its own task
+        while d.busy.locked() or d.state != "idle":
+            await asyncio.sleep(0.01)
     d = run(scenario)
-    assert _state(d)["blindfoldResult"] == "failed" and _state(d)["blindfoldReason"] == reason
-    assert _no_notices == [] and d.brain.asked == []
+    assert prompt.BLINDFOLD_DEFAULT in d.brain.asked[-1]
+    assert _state(d)["blindfoldResult"] == "ok" and _no_notices == []
+
+
+def test_without_blindfold_no_words_still_does_nothing(run, _no_notices):
+    async def scenario(d):
+        d.listening = _Heard("", held=0.1)
+        assert await d.release() == "too short"
+        d.listening = _Heard("")
+        assert await d.release() == "heard nothing"
+    d = run(scenario)
+    assert d.brain.asked == []
 
 
 def test_cancel_ends_red_only_when_something_was_running(run):
