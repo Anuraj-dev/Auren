@@ -55,6 +55,12 @@ ShellRoot {
       if (kind === "failed") p.upd = { state: "failed", installed: installed,
         message: "install.sh failed (exit 3): see ~/.local/state/auren/update.log. Auren is back on 54ebe81." }
       if (kind === "refused") { p.vocabMessage = "\"herdr\" is already in the built-in list."; p.vocabOk = false }
+      // Blindfold mode: on, with no result yet, while a request runs, and after it (green or red)
+      if (kind === "blindfold") p.st = Object.assign({}, p.st, { state: "idle", blindfold: true, blindfoldResult: null })
+      if (kind === "blindfold-running") p.st = Object.assign({}, p.st, { state: "working", blindfold: true, blindfoldResult: null })
+      if (kind === "blindfold-ok") p.st = Object.assign({}, p.st, { state: "idle", blindfold: true, blindfoldResult: "ok" })
+      if (kind === "blindfold-failed") p.st = Object.assign({}, p.st, { state: "idle", blindfold: true, blindfoldResult: "failed",
+        detail: "no question on screen", blindfoldReason: "no question on screen" })
       if (kind === "cursor") { p.cursorActive = true; p.inNav = false; p.cursorRow = 1; p.cursorCol = 1 }
       if (kind === "nav") { p.cursorActive = true; p.inNav = true }
       if (kind === "down") {      // the keyboard to the last row of the page: it scrolls on a short screen
