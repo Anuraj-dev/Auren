@@ -124,6 +124,8 @@ The default approval level, `ask`, asks before actions classified as risky. `tas
 cover further actions of the same kind in that task. `free` allows file and window actions without
 asking. Publishing, root/system changes, secrets, purchases, disk wipes, and changes to Auren's own
 controls still ask at every level except `never`, which asks about nothing at all.
+[Blindfold mode](docs/blindfold.md), only for the blindfold test, forces `never` while it is on: silent,
+no questions, and only the focused window.
 
 At `free`, a separate Claude judge can allow a private or group chat message you explicitly requested,
 without asking again. If it cannot verify the request, it asks. This judge also needs Claude Code;

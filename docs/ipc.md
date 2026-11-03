@@ -38,7 +38,9 @@ Always present:
 | `voiceName` | Supertonic voice (`F2`, `M3`, …) |
 | `voices` | Voices available |
 | `tts` | `{speed, steps, volume, pause}` |
-| `safety` | Approval level: `ask`, `task`, `free` or `never` ([safety.md](safety.md#approval-levels)) |
+| `safety` | Approval level: `ask`, `task`, `free` or `never` ([safety.md](safety.md#approval-levels)); the saved one, even while Blindfold forces `never` |
+| `blindfold` | Blindfold mode on ([blindfold.md](blindfold.md)) |
+| `blindfoldResult`, `blindfoldReason` | Blindfold: `"ok"`, `"failed"` (why in `blindfoldReason`, also the `detail`) or `null` (none yet, or a request is running) |
 
 Sometimes present:
 
@@ -70,8 +72,9 @@ the reply is one line. It exits 1 when the daemon isn't running.
 | `effort low\|medium\|high\|xhigh\|max` | Claude's effort (fresh conversation) |
 | `codex-effort minimal\|low\|medium\|high\|xhigh` | Codex's effort (from its next answer) |
 | `safety ask\|task\|free\|never` | How much Auren asks before risky actions (saved in `config.toml`) |
+| `blindfold on\|off\|toggle` | Blindfold mode, only for the blindfold test: silent, nothing asks, only the focused window ([blindfold.md](blindfold.md); saved in `config.toml`) |
 | `yes` / `no` | Answer the question(s) it is waiting on (the bubble's and the panel's buttons send these; bind them to keys if you like). The reply says how many were approved or dropped, or that nothing is waiting |
-| `status` | JSON: state, brain, mode, effort, voice, safety |
+| `status` | JSON: state, brain, mode, effort, voice, safety, blindfold |
 | `reload` | Re-read `config.toml` and the vocabulary and apply what changed (`auren config` and `auren vocab` send it) |
 | `quit` | Stop the daemon |
 
@@ -79,7 +82,7 @@ the reply is one line. It exits 1 when the daemon isn't running.
 
 | Path | Writer | Content |
 |---|---|---|
-| `~/.config/auren/config.toml` | user, `auren config`, daemon | Settings: `[voice]` (on, name, tuning), `[brain]` (mode, effort), `[safety]` (level). The daemon rewrites only the values it changes, keeping comments. Replaces `settings.json`, which is moved in once and kept as `settings.json.bak` |
+| `~/.config/auren/config.toml` | user, `auren config`, daemon | Settings: `[voice]` (on, name, tuning), `[brain]` (mode, effort), `[safety]` (level), `[blindfold]` (enabled). The daemon rewrites only the values it changes, keeping comments. Replaces `settings.json`, which is moved in once and kept as `settings.json.bak` |
 | `~/.config/auren/mascot.json` | bar plugin (read by the mascot) | Mascot preferences |
 | `~/.config/auren/secrets.env` | user | API keys (mode 600) |
 | `~/.config/auren/routines/*.md` | user | Saved workflows for the brain |

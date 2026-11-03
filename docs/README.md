@@ -5,6 +5,7 @@
 - [Install and troubleshoot](install.md): requirements, setup, optional integrations, and removal.
 - [Talking to Auren](daemon.md): keys, interruptions, voice settings, and logs.
 - [Safety](safety.md): approval levels, bound confirmations, the send judge, and limitations.
+- [Blindfold mode](blindfold.md): the silent mode for the blindfold test, and its green or red result.
 - [Privacy](privacy.md): what leaves the laptop and what stays on disk.
 - [Mascots](mascot.md): controls, preferences, animation, and adding characters.
 - [Bar plugin](bar-plugin.md): pages, keyboard navigation, and settings.

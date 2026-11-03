@@ -29,7 +29,7 @@ Like Claude Code's permission modes: `safety.level` in `config.toml`, `auren-ctl
 | `ask` | Every risky action asks first. |
 | `task` | The first risky action asks. A yes also covers the rest of **that task** for the kinds that were approved: later actions of those kinds run without asking. |
 | `free` | **Full access**, for development. Windows and files just run. `send` still asks, except a chat message your own words just asked for (see [The judge](#the-judge)), and the floor always asks. |
-| `never` | **Nothing asks**, the floor included: sending, publishing, root, packages, secrets, buying and wiping all just run. Only for a machine whose owner accepts what that gives up (below). |
+| `never` | **Nothing asks**, the floor included: sending, publishing, root, packages, secrets, buying and wiping all just run. Only for a machine whose owner accepts what that gives up (below). [Blindfold mode](blindfold.md) forces it while on, without changing the saved level. |
 
 **The floor: `publish`, `system`, `secrets`, `money`, `wipe` and `auren` ask at every level but `never`, every time**, and a yes never covers them later. None of them can be taken back: publishing, root, power, services, packages, secrets, buying and paying, wiping a disk or a home, and Auren's own controls are never a surprise, even at `free`. Several waiting at once still take one yes (below).
 

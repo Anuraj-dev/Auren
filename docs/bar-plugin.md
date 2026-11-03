@@ -12,7 +12,9 @@ The chosen mascot in pixels (Auren 16x12, Veyra 16x11, one pixel per unit):
 - **active** (listening, thinking, working, speaking, waiting for a yes/no): the mascot's colour, bobbing
   (Auren's eyes and antenna light up gold, his thruster cyan); Auren's hand up while listening;
 - **error:** red;
-- **off:** dim, eyes shut.
+- **off:** dim, eyes shut;
+- **Blindfold** ([blindfold.md](blindfold.md)): dim and still while a request runs, then **green** (ok) or
+  **red** (failed) until the next one; hover shows why it failed.
 
 Hover shows the status. **Click** opens the panel; **right-click** starts a fresh conversation. A dot in
 the corner means an update is out.
@@ -34,7 +36,7 @@ panel. It remembers the last page while the shell runs.
 
 | Page | What | How |
 |---|---|---|
-| **Home** | the live mascot (**click it to talk**, again to send; while it thinks, works or speaks, stop it; right-click to poke; starts Auren when it's off); quick switches: On, Voice, Mascot, Fresh, Stop; **Yes / No** and the question(s) while it waits for an answer; the last exchange | `auren-ctl talk/voice/forget/cancel/yes/no`, `systemctl --user start/stop auren auren-mascot`, `~/.local/state/auren/history.jsonl` |
+| **Home** | the live mascot (**click it to talk**, again to send; while it thinks, works or speaks, stop it; right-click to poke; starts Auren when it's off); quick switches: On, Voice, Mascot, Blindfold, Fresh, Stop; **Yes / No** and the question(s) while it waits for an answer; the last exchange | `auren-ctl talk/voice/blindfold/forget/cancel/yes/no`, `systemctl --user start/stop auren auren-mascot`, `~/.local/state/auren/history.jsonl` |
 | **Mascot** | Auren or Veyra as live previews (click to choose; it says hello in its voice); speech bubble; sleep animation (~6% CPU); voice follows mascot; how faded it gets when idle; size; reset place; poke | writes `mascot`, `bubble`, `sleepAnimation`, `matchVoice`, `idleOpacity` in `~/.config/auren/mascot.json` (the mascot reloads it); size, reset and poke through the mascot's IPC |
 | **Voice** | voice replies on/off in English; voice F2 (Auren's), M3, F1, M1 (decision 0001's shortlist; a click plays a sample); speed 0.8–1.4×; quality Fast/Balanced/Best (3, 5, 8 steps); volume; pause between sentences; Test; Defaults | `auren-ctl voice`, `voice-name`, `tts …`, `say` (the Test sentence is always English) |
 | **Brain** | who answers: Auto (Claude, Codex on a limit) / Claude only / Codex only, and which is answering now; the effort of whoever answers now: Claude's (Low, Medium, High, XHigh, Max; changing it starts a fresh conversation), or Codex's when Codex answers, in Codex-only mode or after Claude's limit (Minimal, Low, Medium, High, XHigh; from the next request); **Risky actions**: Ask first / Once per task / Don't ask ([safety.md](safety.md#approval-levels)); today's requests, average time to answer, how many Codex answered | `auren-ctl brain`, `auren-ctl effort`, `auren-ctl codex-effort`, `auren-ctl safety`, history log |
