@@ -144,7 +144,11 @@ KEYS = [
         "Codex's reasoning effort: minimal, low, medium, high or xhigh"),
     Key("safety.level", "safety", "ask", _choice(*SAFETY_LEVELS),
         "How much Auren asks before a risky action: ask (every time), task (once per task: a yes covers the rest of it) "
-        "or free (full access: windows and files just run; sending, publishing, root, packages, secrets, buying and wiping still ask)"),
+        "or free (full access: windows and files just run; sending, publishing, root, packages, secrets, buying and wiping still ask) "
+        "or never (nothing asks)"),
+    Key("blindfold.enabled", "blindfold", False, _boolean,
+        "Blindfold mode, only for the blindfold test: silent, no questions (approval level never), works only in the "
+        "focused window, and the bar shows green or red (see docs/blindfold.md)"),
     Key("integrations.herdr", "integrations.herdr", "auto", _switch,
         "Coding agents and commands in herdr tabs: auto (if herdr is installed), true or false. Without it, commands run in the background"),
     Key("integrations.browser", "integrations.browser", "auto", _switch,

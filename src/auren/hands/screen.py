@@ -458,6 +458,32 @@ def type_text(text: str) -> str:
     return f"pasted {len(text)} characters"
 
 
+KEY_DELAY_MS = 12       # between typed keys: some apps drop letters that come faster
+
+
+def type_keys(text: str) -> str:
+    """Type text as real key presses only, never through the clipboard (Blindfold mode). A line break is
+    Shift+Enter, a new line in a chat or a multi-line field; a terminal has no such key (Shift+Enter runs the
+    line there), so text with line breaks fails in one. Keys can drop: the caller looks again afterwards."""
+    _refocus()
+    lines = re.split(r"\r\n|\r|\n", text)
+    if len(lines) > 1:
+        try:
+            app = json.loads(_sh(["hyprctl", "activewindow", "-j"])).get("class", "")
+        except (ScreenError, json.JSONDecodeError):
+            app = ""
+        if app.lower() in TERMINALS:
+            raise ScreenError("can't type line breaks in a terminal without running the line: type one line at a time")
+    for i, line in enumerate(lines):
+        if i:
+            _sh(["wtype", "-M", "shift", "-k", "Return", "-m", "shift"])
+        if line:
+            _sh(["wtype", "-d", str(KEY_DELAY_MS), "--", line], timeout=10 + len(line) * KEY_DELAY_MS / 1000 * 2)
+    return (f"typed {len(text)} characters key by key"
+            + (f", {len(lines) - 1} line break(s) as Shift+Enter" if len(lines) > 1 else "")
+            + ": look again to check every letter came through")
+
+
 _KEY_NAMES = {"enter": "Return", "return": "Return", "esc": "Escape", "escape": "Escape", "tab": "Tab",
               "space": "space", "backspace": "BackSpace", "delete": "Delete", "up": "Up", "down": "Down",
               "left": "Left", "right": "Right", "home": "Home", "end": "End", "pageup": "Prior", "pagedown": "Next"}

@@ -36,6 +36,7 @@ ICONS = {
     "auren": "\U000F0674",       # sparkles: anything else Auren does
 }
 
+muted = False                   # Blindfold mode (docs/blindfold.md): nothing shows at all
 _seen = [0.0, False]            # when the mascot's process was last looked for, and whether it was running
 _osd_at = 0.0                   # when Auren last opened the OSD
 _opening: list[subprocess.Popen] = []    # omarchy-osd calls that may not have reached the shell yet
@@ -82,7 +83,7 @@ def mascot_showing() -> bool:
 def show(message: str, kind: str = "auren", ms: int = 1500, always: bool = False) -> None:
     """A one-line status on Omarchy's OSD, unless the mascot shows it already (`always`: even then)."""
     global _osd_at
-    if not always and mascot_showing():
+    if muted or (not always and mascot_showing()):
         return
     with _osd:
         _osd_at = time.monotonic()
@@ -94,7 +95,7 @@ def show(message: str, kind: str = "auren", ms: int = 1500, always: bool = False
 def notify(headline: str, text: str = "", kind: str = "auren", always: bool = False) -> None:
     """Something to read in full (a reply, an error), as a notification, unless the mascot shows it
     (`always`: news the mascot doesn't show, like an update)."""
-    if not always and mascot_showing():
+    if muted or (not always and mascot_showing()):
         return
     _spawn(["omarchy-notification-send", "--app-name", "auren", "-g", ICONS.get(kind, ICONS["auren"]),
             *(["-u", "normal"] if kind == "error" else []), headline, *([text] if text else [])])

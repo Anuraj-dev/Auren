@@ -171,7 +171,7 @@ def test_state_goes_back_to_claude_when_codex_handover_ends(tmp_path, monkeypatc
     async def run():
         d = daemon.Daemon.__new__(daemon.Daemon)
         d.settings, d.voice, d.speak_enabled = {"voice": True, "voiceName": "F2", **tuning()}, None, False
-        d.tools, d.loop = SimpleNamespace(level="ask"), asyncio.get_running_loop()
+        d.tools, d.loop = SimpleNamespace(chosen="ask", blindfold=False), asyncio.get_running_loop()
         d.brain = Handover()
         d.brain.primary, d.brain.backup = SimpleNamespace(effort="low"), SimpleNamespace(model="m", effort="low")
         d.set_state("idle")
