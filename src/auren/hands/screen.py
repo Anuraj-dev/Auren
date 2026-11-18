@@ -290,6 +290,10 @@ _HOLD = {"shift": "KEY_LEFTSHIFT", "ctrl": "KEY_LEFTCTRL", "control": "KEY_LEFTC
 _DIGITS = {str(d): f"KEY_{d}" for d in range(10)}
 
 
+# Keys type_keys uses to keep a code editor from changing what it types (see _guarded).
+_EDIT = ("KEY_ENTER", "KEY_LEFT", "KEY_HOME", "KEY_BACKSPACE", "KEY_DELETE")
+
+
 # Every printable ASCII character as (physical key, shift) on a US keyboard, for type_keys. The keys go
 # out from the virtual keyboard like a real keyboard's, so the app sees real keycodes. wtype makes up a
 # keymap instead, and Chromium misread its punctuation: a " or $ that landed on Backspace's keycode
@@ -313,7 +317,7 @@ def _keys():
         from evdev import UInput
         from evdev import ecodes as e
         try:
-            _keyboard = UInput({e.EV_KEY: [getattr(e, k) for k in sorted({*_HOLD.values(), *_DIGITS.values(), *(k for k, _ in _US.values()), "KEY_ENTER"})]},
+            _keyboard = UInput({e.EV_KEY: [getattr(e, k) for k in sorted({*_HOLD.values(), *_DIGITS.values(), *(k for k, _ in _US.values()), *_EDIT})]},
                                name="auren-virtual-keys")
         except (OSError, PermissionError) as err:
             raise ScreenError(f"can't create a virtual keyboard via /dev/uinput: {err}") from None
@@ -501,12 +505,29 @@ def _tap(kb, key: int, shift: bool) -> None:
     time.sleep(half)
 
 
+# Characters a code editor may answer by inserting more: an auto-closed bracket or quote, an auto-indent
+# after a line break, a suggestion accepted by Tab or Shift+Enter.
+_HELPED = re.compile(r"[\n\r\t(\[{\"'`]")
+SENTINEL = "x"
+
+
 def type_keys(text: str) -> str:
     """Type text as real key presses only, never through the clipboard (Blindfold mode). A line break is
     Shift+Enter, a new line in a chat or a multi-line field; a terminal has no such key (Shift+Enter runs the
     line there), so text with line breaks fails in one. On a US layout every ASCII character goes out as its
     real key from the virtual keyboard, exactly as if typed; other characters (and other layouts) go
-    through wtype."""
+    through wtype.
+
+    Text a code editor would add to (brackets, quotes, line breaks, tabs) is typed so the editor can't:
+    - A letter (SENTINEL) sits just after the cursor while typing, then is deleted. Monaco, CodeMirror
+      and Ace only auto-close a bracket or quote before a space, a closer or the end of the line, never
+      before a letter, so `(` stays `(`.
+    - After each line break, whatever indent the editor added is selected (Shift+Home twice: the first
+      stops where the indent ends, after a throwaway letter typed so there's always something to select)
+      and deleted, then the line's own indent is typed.
+    - Before a line break or Tab, a space and Backspace close any suggestion list, since Monaco accepts a
+      suggestion on Tab and Shift+Enter.
+    In a plain text box these are no-ops: the same text comes out."""
     from evdev import ecodes as e
     _refocus()
     lines = re.split(r"\r\n|\r|\n", text)
@@ -524,20 +545,43 @@ def type_keys(text: str) -> str:
             kb = _keys() if real else None
         except ScreenError:                    # no /dev/uinput: wtype it is, before any key went out
             kb, real = None, False
+        guarded = bool(kb) and bool(_HELPED.search(text))
+
+        def char(c: str) -> None:
+            _tap(kb, getattr(e, _US[c][0]), _US[c][1])
+
+        def close_suggestions() -> None:
+            char(" ")
+            _tap(kb, e.KEY_BACKSPACE, False)
+
+        if guarded:
+            char(SENTINEL)
+            _tap(kb, e.KEY_LEFT, False)
         for i, line in enumerate(lines):
             if i:
                 if kb:
+                    if guarded:
+                        close_suggestions()
                     _tap(kb, e.KEY_ENTER, True)
+                    if guarded:                # drop the editor's auto-indent
+                        char(SENTINEL)
+                        _tap(kb, e.KEY_HOME, True)
+                        _tap(kb, e.KEY_HOME, True)
+                        _tap(kb, e.KEY_BACKSPACE, False)
                 else:
                     _sh(["wtype", "-M", "shift", "-k", "Return", "-m", "shift"])
             # runs of characters the virtual keyboard has, and runs it doesn't (é, emoji)
             for run in re.findall(r"[ -~\t]+|[^ -~\t]+", line) if kb else ([line] if line else []):
                 if kb and run[0] in _US:
                     for c in run:
-                        _tap(kb, getattr(e, _US[c][0]), _US[c][1])
+                        if c == "\t" and guarded:
+                            close_suggestions()
+                        char(c)
                 else:
                     _sh(["wtype", "-d", str(KEY_DELAY_MS), "--", run], timeout=10 + len(run) * KEY_DELAY_MS / 1000 * 2)
                     wtyped += len(run)
+        if guarded:
+            _tap(kb, e.KEY_DELETE, False)
     breaks = f", {len(lines) - 1} line break(s) as Shift+Enter" if len(lines) > 1 else ""
     if not wtyped:
         return f"typed {len(text)} characters as real key presses{breaks}"

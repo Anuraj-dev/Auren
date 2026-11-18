@@ -102,7 +102,7 @@ BLINDFOLD = """Blindfold mode: nothing you say is spoken or shown, and nobody ne
 - Never ask the user anything. If the request is unclear, do the most sensible thing the screen and the words point to; if nothing sensible fits, reply failed.
 - Stay where the user is: never launch apps, open URLs or tabs, switch windows or workspaces, or bring anything to the front.
 - When the screen shows a question, work out the answer and enter it in that window: click the field or option, then type_text. Never paste or use the clipboard. Don't submit or send unless the user asked.
-- After acting, look_at_screen again and check the result (typed letters can drop). Fix it, then reply.
+- Type each answer once with type_text: it comes out exactly as you wrote it, even in a code editor (no auto-closed brackets or extra indent). After acting, look_at_screen again to check it's in the right place. If one part is wrong, fix only that part: click just after it (or move there with the arrow keys), BackSpace over the wrong characters and type_text the right ones. Never select everything and retype it all.
 - For research or long work you may use a herdr agent in the background (never show its tab), then type the result yourself."""
 
 

@@ -3,6 +3,7 @@ by one, and a green or red result for the bar. Nothing here touches the real des
 
 import asyncio
 import json
+import re
 import threading
 
 import pytest
@@ -412,23 +413,49 @@ def test_herdr_agents_run_in_the_background(rt, monkeypatch):
 # --- typing: key by key, never the clipboard ------------------------------------------------------------
 
 class FakeKeys:
-    """The virtual keyboard: decodes its key events back into text with a US keymap, as a compositor
-    would, and fails if any key is left held."""
+    """The virtual keyboard typing into a plain text box: decodes key events with a US keymap, as a
+    compositor would, and applies them (cursor, Shift+Home selection, Backspace, Delete). Fails if a key
+    is left held."""
 
     def __init__(self):
         from evdev import ecodes as e
-        self.e, self.down, self.text = e, set(), ""
+        self.e, self.down, self.text, self.at, self.anchor = e, set(), "", 0, None
         self.chars = {(getattr(e, k), shift): c for c, (k, shift) in screen._US.items()}
         self.chars[(e.KEY_ENTER, True)] = "\n"
 
+    def _cut(self):
+        if self.anchor is not None:
+            a, b = sorted((self.anchor, self.at))
+            self.text, self.at, self.anchor = self.text[:a] + self.text[b:], a, None
+            return True
+        return False
+
     def write(self, _type, code, value):
-        if value:
-            assert code not in self.down
-            self.down.add(code)
-            if code != self.e.KEY_LEFTSHIFT:
-                self.text += self.chars[(code, self.e.KEY_LEFTSHIFT in self.down)]
-        else:
+        e = self.e
+        if not value:
             self.down.discard(code)
+            return
+        assert code not in self.down
+        self.down.add(code)
+        shift = e.KEY_LEFTSHIFT in self.down
+        if code == e.KEY_LEFTSHIFT:
+            return
+        if code == e.KEY_HOME:
+            if shift and self.anchor is None:
+                self.anchor = self.at
+            self.at = self.text.rfind("\n", 0, self.at) + 1
+        elif code == e.KEY_LEFT:
+            self.at, self.anchor = max(0, self.at - 1), None
+        elif code == e.KEY_BACKSPACE:
+            if not self._cut() and self.at:
+                self.text, self.at = self.text[:self.at - 1] + self.text[self.at:], self.at - 1
+        elif code == e.KEY_DELETE:
+            if not self._cut():
+                self.text = self.text[:self.at] + self.text[self.at + 1:]
+        else:
+            self._cut()
+            c = self.chars[(code, shift)]
+            self.text, self.at = self.text[:self.at] + c + self.text[self.at:], self.at + 1
 
     def syn(self):
         pass
@@ -476,6 +503,46 @@ def test_every_ascii_character_comes_out_exactly(keyboard):
     every = "".join(chr(i) for i in range(32, 127)) + "\t"
     screen.type_keys(line + "\n" + every)
     assert kb.text == line + "\n" + every and not kb.down
+
+
+class FakeEditor(FakeKeys):
+    """A code editor's habits, like Monaco's: a line break keeps the line's indent (and adds 4 after `{`
+    or `:`), and a bracket or quote auto-closes unless a letter follows the cursor."""
+    CLOSE = {"(": ")", "[": "]", "{": "}", '"': '"', "'": "'"}
+
+    def write(self, _type, code, value):
+        before = self.text
+        super().write(_type, code, value)
+        if not value or self.text == before or len(self.text) != len(before) + 1:
+            return
+        c = self.text[self.at - 1]
+        if c == "\n":
+            prev = before[before.rfind("\n", 0, self.at - 1) + 1:self.at - 1]
+            indent = re.match(r" *", prev).group() + ("    " if prev.rstrip().endswith(("{", ":")) else "")
+            self.text, self.at = self.text[:self.at] + indent + self.text[self.at:], self.at + len(indent)
+        elif c in self.CLOSE and not self.text[self.at:self.at + 1].isalnum():
+            self.text = self.text[:self.at] + self.CLOSE[c] + self.text[self.at:]
+
+
+def test_an_editors_auto_indent_and_auto_close_change_nothing(keyboard, monkeypatch):
+    """Without the guards this editor doubles indents and leaves a `)]}"` trail; with them the code is
+    exact, typed into a function's empty body too."""
+    ed = FakeEditor()
+    monkeypatch.setattr(screen, "_keys", lambda: ed)
+    code = 'def f(xs):\n    out = {"a": [1, (2, 3)]}\n    for x in xs:\n        print("x")\n\n    return out'
+    screen.type_keys(code)
+    assert ed.text == code and ed.at == len(code)
+    ed.text, ed.at = "script() {\n    \n}", 15
+    screen.type_keys('read x; echo "$x"')
+    assert ed.text == 'script() {\n    read x; echo "$x"\n}'
+
+
+def test_plain_text_gets_no_guard_keys(keyboard, monkeypatch):
+    _, _, _, kb = keyboard
+    pressed = []
+    monkeypatch.setattr(screen, "_tap", lambda k, key, shift: pressed.append(key))
+    screen.type_keys("ok then")
+    assert len(pressed) == len("ok then")
 
 
 def test_lines_are_typed_with_shift_enter_between_them(keyboard):

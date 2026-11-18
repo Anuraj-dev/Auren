@@ -44,8 +44,15 @@ accept that whatever the brain is talked into, by the screen or by a misheard wo
   character is its real key (with Shift where needed) from Auren's virtual keyboard, so apps see exactly what a
   keyboard would send and nothing needs checking. Other characters, or another layout, go through `wtype`, and
   then the brain is told to look again. Several lines are typed with Shift+Enter between them; in a terminal
-  that fails instead (it could run a line). A code editor still auto-closes brackets and auto-indents as it
-  would for a person.
+  that fails instead (it could run a line).
+- **Code editors can't change it:** when the text has brackets, quotes, line breaks or tabs, `type_keys`
+  keeps a letter just after the cursor while typing (Monaco, CodeMirror and Ace don't auto-close a bracket or
+  quote before a letter) and deletes it at the end, removes the indent the editor adds after each line break
+  (a throwaway letter, Shift+Home twice, Backspace), and closes the suggestion list (a space and Backspace)
+  before each line break or Tab, which Monaco would take as accepting a suggestion. In a plain text box this
+  all cancels out. An editor that reformats on its own (format on type or save) can still change the text.
+- **Fix in place:** the brain is told to fix a wrong part by putting the cursor just after it, deleting it
+  and typing the right characters, never to select everything and retype it.
 
 ## Green and red
 
@@ -69,5 +76,5 @@ default job. A refused tool that left the job unfinished shows up as the brain's
 - Shift+Enter in a single-line field may submit the form.
 - A click on an empty spot (the desktop or the bar) is refused, like another window.
 - "Focused window" is Hyprland's active window; a popup that opens as its own window counts as another one.
-- Tested in `tests/test_blindfold.py` with a fake brain and fake `wtype`; the real microphone, real typing and
-  the real bar are checked by hand.
+- Tested in `tests/test_blindfold.py` with a fake brain, a fake keyboard and a fake editor; the real microphone,
+  real typing (a textarea and Monaco in Brave) and the real bar are checked by hand.
