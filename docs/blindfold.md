@@ -47,7 +47,7 @@ accept that whatever the brain is talked into, by the screen or by a misheard wo
   that fails instead (it could run a line).
 - **Code editors can't change it:** when the text has brackets, quotes, line breaks or tabs, `type_keys`
   keeps a letter just after the cursor while typing (Monaco, CodeMirror and Ace don't auto-close a bracket or
-  quote before a letter) and deletes it at the end, removes the indent the editor adds after each line break
+  quote before a letter) and removes it at the end with Right and Backspace (zsh types `~` for Delete), removes the indent the editor adds after each line break
   (a throwaway letter, Shift+Home twice, Backspace), and closes the suggestion list (a space and Backspace)
   before each line break or Tab, which Monaco would take as accepting a suggestion. In a plain text box this
   all cancels out. An editor that reformats on its own (format on type or save) can still change the text.

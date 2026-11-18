@@ -446,6 +446,8 @@ class FakeKeys:
             self.at = self.text.rfind("\n", 0, self.at) + 1
         elif code == e.KEY_LEFT:
             self.at, self.anchor = max(0, self.at - 1), None
+        elif code == e.KEY_RIGHT:
+            self.at, self.anchor = min(len(self.text), self.at + 1), None
         elif code == e.KEY_BACKSPACE:
             if not self._cut() and self.at:
                 self.text, self.at = self.text[:self.at - 1] + self.text[self.at:], self.at - 1

@@ -291,7 +291,7 @@ _DIGITS = {str(d): f"KEY_{d}" for d in range(10)}
 
 
 # Keys type_keys uses to keep a code editor from changing what it types (see _guarded).
-_EDIT = ("KEY_ENTER", "KEY_LEFT", "KEY_HOME", "KEY_BACKSPACE", "KEY_DELETE")
+_EDIT = ("KEY_ENTER", "KEY_LEFT", "KEY_RIGHT", "KEY_HOME", "KEY_BACKSPACE")
 
 
 # Every printable ASCII character as (physical key, shift) on a US keyboard, for type_keys. The keys go
@@ -521,7 +521,8 @@ def type_keys(text: str) -> str:
     Text a code editor would add to (brackets, quotes, line breaks, tabs) is typed so the editor can't:
     - A letter (SENTINEL) sits just after the cursor while typing, then is deleted. Monaco, CodeMirror
       and Ace only auto-close a bracket or quote before a space, a closer or the end of the line, never
-      before a letter, so `(` stays `(`.
+      before a letter, so `(` stays `(`. It goes with Right and Backspace, not Delete, which zsh
+      doesn't bind (it types `~`).
     - After each line break, whatever indent the editor added is selected (Shift+Home twice: the first
       stops where the indent ends, after a throwaway letter typed so there's always something to select)
       and deleted, then the line's own indent is typed.
@@ -580,8 +581,9 @@ def type_keys(text: str) -> str:
                 else:
                     _sh(["wtype", "-d", str(KEY_DELAY_MS), "--", run], timeout=10 + len(run) * KEY_DELAY_MS / 1000 * 2)
                     wtyped += len(run)
-        if guarded:
-            _tap(kb, e.KEY_DELETE, False)
+        if guarded:                            # Right, Backspace: zsh has no Delete key binding (it types ~)
+            _tap(kb, e.KEY_RIGHT, False)
+            _tap(kb, e.KEY_BACKSPACE, False)
     breaks = f", {len(lines) - 1} line break(s) as Shift+Enter" if len(lines) > 1 else ""
     if not wtyped:
         return f"typed {len(text)} characters as real key presses{breaks}"
