@@ -90,10 +90,10 @@ class Daemon:
         self.tools = Runtime(TOOLS_SOCKET)           # serving from serve() on
         s = self.settings
         self.tools.level = s["safety"]
+        self.voice = None                             # before _blindfold, which stops it
         self._blindfold(s["blindfold"])
         self.brain = Brain(self.tools, SESSION, mode=s["brain"], effort=s["effort"], claude_model=s["brain.claude_model"],
                            codex_model=s["brain.codex_model"], codex_effort=s["brain.codex_effort"])
-        self.voice = None
         self.speak_enabled = speak                    # False: started with --quiet, the voice isn't even loaded
         self.vocab = vocabulary(self.profile)
         self.listening: Listening | None = None
