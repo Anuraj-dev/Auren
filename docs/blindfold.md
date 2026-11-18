@@ -40,9 +40,12 @@ accept that whatever the brain is talked into, by the screen or by a misheard wo
     clipboard: anything with Super, Alt+Tab, Ctrl+T/N/W, Ctrl+Tab, Ctrl+PgUp/PgDn, copy, cut and paste
     (including Shift+Insert and Ctrl+Shift+C/V/X), media and Print keys, Alt+F4.
   - A refused tool returns an error telling the brain to stay in the window or reply failed. It never asks.
-- **Typing, never paste:** `type_text` types key by key with `wtype` (a short delay between keys) and never
-  touches the clipboard, then tells the brain to look again for dropped letters. Several lines are typed with
-  Shift+Enter between them; in a terminal that fails instead (it could run a line).
+- **Typing, never paste:** `type_text` types key by key and never touches the clipboard. On a US layout each
+  character is its real key (with Shift where needed) from Auren's virtual keyboard, so apps see exactly what a
+  keyboard would send and nothing needs checking. Other characters, or another layout, go through `wtype`, and
+  then the brain is told to look again. Several lines are typed with Shift+Enter between them; in a terminal
+  that fails instead (it could run a line). A code editor still auto-closes brackets and auto-indents as it
+  would for a person.
 
 ## Green and red
 

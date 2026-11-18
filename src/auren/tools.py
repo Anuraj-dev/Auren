@@ -1191,7 +1191,8 @@ def type_text(text: str) -> str:
     """Type text into whatever has keyboard focus (click the field first). It is pasted in one go, so a
     newline is a line break, not Enter: press Enter with press_keys to send. Enter or a Send click afterwards
     sends what you typed, and that may ask the user (just do it, don't ask first). In Blindfold mode it's typed
-    key by key instead (never pasted), a newline as Shift+Enter, and letters can drop: look again and fix it."""
+    key by key instead (never pasted), a newline as Shift+Enter, each key exactly as typed on a keyboard, so a
+    code editor may auto-close brackets or quotes or auto-indent new lines as it would for a person."""
     s = _session_now()
     window = screen.key_target()
     if outside := _outside(window):

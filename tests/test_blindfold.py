@@ -411,14 +411,40 @@ def test_herdr_agents_run_in_the_background(rt, monkeypatch):
 
 # --- typing: key by key, never the clipboard ------------------------------------------------------------
 
+class FakeKeys:
+    """The virtual keyboard: decodes its key events back into text with a US keymap, as a compositor
+    would, and fails if any key is left held."""
+
+    def __init__(self):
+        from evdev import ecodes as e
+        self.e, self.down, self.text = e, set(), ""
+        self.chars = {(getattr(e, k), shift): c for c, (k, shift) in screen._US.items()}
+        self.chars[(e.KEY_ENTER, True)] = "\n"
+
+    def write(self, _type, code, value):
+        if value:
+            assert code not in self.down
+            self.down.add(code)
+            if code != self.e.KEY_LEFTSHIFT:
+                self.text += self.chars[(code, self.e.KEY_LEFTSHIFT in self.down)]
+        else:
+            self.down.discard(code)
+
+    def syn(self):
+        pass
+
+
 @pytest.fixture
 def keyboard(monkeypatch):
-    """screen's shell commands, recorded; the focused window is `app`. The clipboard must not be touched."""
-    sent, app = [], {"class": "chromium"}
+    """screen's shell commands, recorded, and the virtual keyboard's typing; the focused window is `app`
+    and the layout is `layout`. The clipboard must not be touched."""
+    sent, app, layout, kb = [], {"class": "chromium"}, {"kb_layout": "us", "kb_variant": ""}, FakeKeys()
 
     def sh(cmd, timeout=10):
         if cmd[:2] == ["hyprctl", "activewindow"]:
             return json.dumps({"address": FRONT, **app})
+        if cmd[:2] == ["hyprctl", "getoption"]:
+            return json.dumps({"str": layout[cmd[2].split(":")[1]]})
         sent.append(cmd)
         return ""
 
@@ -426,36 +452,52 @@ def keyboard(monkeypatch):
         raise AssertionError("the clipboard was used")
     monkeypatch.setattr(screen, "_sh", sh)
     monkeypatch.setattr(screen, "_clicked", None)
+    monkeypatch.setattr(screen, "_keys", lambda: kb)
+    monkeypatch.setattr(screen, "KEY_DELAY_MS", 0)
     for name in ("save", "copy", "restore"):
         monkeypatch.setattr(clipboard, name, no_clipboard)
-    return sent, app
+    return sent, app, layout, kb
 
 
-def test_type_text_types_key_by_key_and_never_pastes(rt, keyboard, monkeypatch):
-    sent, _ = keyboard
+def test_type_text_types_real_keys_and_never_pastes(rt, keyboard, monkeypatch):
+    sent, _, _, kb = keyboard
     monkeypatch.setattr(screen, "window", lambda a: {"class": "chromium", "title": "Quiz"})
     monkeypatch.setattr(tools, "_warm_judge", lambda: None)
     rt.set_blindfold(True)
     out = _call(rt, "type_text", text="Paris")
-    assert "key by key" in out and "look again" in out
-    assert sent == [["wtype", "-d", str(screen.KEY_DELAY_MS), "--", "Paris"]]
+    assert "real key presses" in out and "look again" not in out
+    assert kb.text == "Paris" and sent == []
+
+
+def test_every_ascii_character_comes_out_exactly(keyboard):
+    """The line Blindfold mangled through wtype (`echox`, lost brackets), and every printable character."""
+    _, _, _, kb = keyboard
+    line = """read -r x; if echo "$x" | grep -Eqx '[+-]?([0-9]+[.]?[0-9]*|[.][0-9]+)'; then echo ok; fi"""
+    every = "".join(chr(i) for i in range(32, 127)) + "\t"
+    screen.type_keys(line + "\n" + every)
+    assert kb.text == line + "\n" + every and not kb.down
 
 
 def test_lines_are_typed_with_shift_enter_between_them(keyboard):
-    sent, _ = keyboard
+    sent, _, _, kb = keyboard
     screen.type_keys("Dear team,\n\nThanks.")
-    assert sent == [["wtype", "-d", str(screen.KEY_DELAY_MS), "--", "Dear team,"],
-                    ["wtype", "-M", "shift", "-k", "Return", "-m", "shift"],
-                    ["wtype", "-M", "shift", "-k", "Return", "-m", "shift"],
-                    ["wtype", "-d", str(screen.KEY_DELAY_MS), "--", "Thanks."]]
-    assert not any("ctrl" in c and "v" in c for c in sent)
+    assert kb.text == "Dear team,\n\nThanks." and sent == []
+
+
+def test_other_characters_and_layouts_go_through_wtype_and_say_to_look(keyboard):
+    sent, _, layout, kb = keyboard
+    out = screen.type_keys("café ok")
+    assert kb.text == "caf ok" and sent == [["wtype", "-d", "0", "--", "é"]] and "look again" in out
+    sent.clear(); layout["kb_layout"] = "de"
+    out = screen.type_keys("Hallo")
+    assert sent == [["wtype", "-d", "0", "--", "Hallo"]] and "layout" in out
 
 
 def test_several_lines_fail_in_a_terminal(keyboard):
-    sent, app = keyboard
+    sent, app, _, kb = keyboard
     app["class"] = "Alacritty"
     with pytest.raises(screen.ScreenError, match="one line at a time"):
         screen.type_keys("ls\nrm -r x")
-    assert sent == []
+    assert kb.text == ""
     screen.type_keys("ls -la")                    # one line is fine (nothing presses Enter)
-    assert sent == [["wtype", "-d", str(screen.KEY_DELAY_MS), "--", "ls -la"]]
+    assert kb.text == "ls -la"
