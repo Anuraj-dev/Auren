@@ -8,7 +8,9 @@ together with the code.
 
 Without `XDG_RUNTIME_DIR`, a private `/tmp/auren-runtime-<uid>/auren/` is used. All paths come from
 `src/auren/config.py` and follow `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` and
-`XDG_DATA_HOME`; the UIs compute the same paths.
+`XDG_DATA_HOME`; the UIs compute the same paths. On macOS the runtime folder is
+`~/Library/Application Support/auren-runtime/auren/` (not `$TMPDIR`, which macOS empties of files unused
+for 3 days), unless `XDG_RUNTIME_DIR` is set, and `brain/` is `$TMPDIR/auren-brain/`.
 
 | File | Writer | Content |
 |---|---|---|
@@ -16,6 +18,8 @@ Without `XDG_RUNTIME_DIR`, a private `/tmp/auren-runtime-<uid>/auren/` is used. 
 | `state.json` | daemon | Current state, below (written whole, then renamed) |
 | `level` | daemon | Loudness 0..1 of the mic or the voice, ~20 times a second |
 | `tools.sock` | daemon | The tool runtime, for the brains' MCP adapter: one JSON line in (`session`, `tool`, `args`), one out (`content`). `auren chat` serves its own `tools-<pid>.sock` |
+| `mascot.pid` | mascot (macOS) | The mascot host's pid, so screen tools leave its windows out |
+| `setup.request` | `auren open` (macOS) | Opening Auren.app asks the mascot's process to show the setup window; it removes the file, and ignores one over a minute old |
 | `daemon.lock` | daemon | Held (flock) while a daemon runs, so a second one exits; holds its pid |
 | `brain/` | brain | The brain's working folder (outside `$HOME` on purpose) |
 
@@ -76,6 +80,7 @@ the reply is one line. It exits 1 when the daemon isn't running.
 | `yes` / `no` | Answer the question(s) it is waiting on (the bubble's and the panel's buttons send these; bind them to keys if you like). The reply says how many were approved or dropped, or that nothing is waiting |
 | `status` | JSON: state, brain, mode, effort, voice, safety |
 | `reload` | Re-read `config.toml` and the vocabulary and apply what changed (`auren config` and `auren vocab` send it) |
+| `permissions` / `permissions microphone\|accessibility\|screen` / `permissions status` | macOS only: ask for all the permissions, or one, or just report them, as JSON with `program` (Auren.app, or the Python macOS asks about without it) and `talk_keys` (the key listener is running). The setup window and `auren permissions` send it |
 | `quit` | Stop the daemon |
 
 ## Files

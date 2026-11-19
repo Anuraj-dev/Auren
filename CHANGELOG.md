@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- Auren runs on Apple Silicon Macs with macOS 14 or newer, as a preview. `./install-macos.sh` installs
+  it with two launch agents (the daemon and the mascot), Control+Option+A as the talk key
+  (`keys.talk`), the robot in a floating window and its controls in the menu bar. Screen control,
+  windows, apps, the clipboard, Spotify, the browser tools and coding agents (in herdr, or a new
+  terminal window without it) use macOS's own interfaces. See [docs/macos.md](docs/macos.md).
+- On the Mac, Auren is an app: the installer builds Auren.app in `~/Applications`, with the robot as
+  its icon, and Auren runs through it. Settings lists the permissions under Auren, not a Python in a
+  hidden folder. Opening the app (or **Set up Auren…** in the menu bar) shows a setup window that
+  asks for the microphone, Accessibility and Screen Recording, takes the AssemblyAI key and checks
+  for Claude Code or Codex, one button each.
+
 ### Changed
 
 - **Full access now means full access.** A new level, `never`, shown as Full access, asks about
@@ -18,6 +31,16 @@
 - A new agent no longer waits at the folder-trust question. Auren marks the folder trusted in Claude
   Code's or Codex's own config before starting it, and answers yes if the question shows anyway.
   Claude Code now highlights "No, exit" first, so Enter alone would have quit it.
+- With the brain on auto and only Codex installed, Codex answers. Before, Auren kept trying to start
+  Claude Code, and every request ended without a reply. A brain that isn't installed is now said out
+  loud as an error.
+- Two Codex turns at once (`auren ask` while the daemon answers) no longer swap replies: each run
+  writes its reply to a file of its own.
+- The brain's working folder must belong to you and be closed to others; one an older Auren left open
+  is closed up.
+- Risky shortcuts are recognized in any modifier order and under any modifier name (`shift+ctrl+q`
+  asks, like `ctrl+shift+q`). Shortcuts that delete for good or empty the Trash count as wiping, and
+  logging out as a system action, so they ask at every level but Full access.
 
 ## 0.1.5
 

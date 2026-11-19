@@ -8,6 +8,13 @@
   auren browser               # the browser tools: status, setup, which browser to use
   auren chat                  # type requests, see tool calls and the reply
   auren ask "open whatsapp"   # one request
+
+macOS only:
+  auren open                  # start Auren and show its setup window (what opening Auren.app does)
+  auren app install|uninstall # Auren.app in ~/Applications (install-macos.sh builds it)
+  auren mascot                # the mascot and the menu bar icon (the com.auren.mascot launch agent runs this)
+  auren service install|start|stop|restart|status   # the launch agents (install.sh sets them up)
+  auren permissions           # ask for the Microphone, Accessibility and Screen Recording permissions
 """
 
 from __future__ import annotations
@@ -50,6 +57,75 @@ def handle(brain, text: str, replied=lambda text: None) -> None:
         print(f"{RED}brain error: {e}{END}")
 
 
+def _permissions() -> int:
+    """Have the daemon ask macOS for its permissions (the dialogs then name it, not this terminal)."""
+    from .ctl import send
+    try:
+        print(send("permissions", timeout=30))
+    except (FileNotFoundError, ConnectionRefusedError):
+        print("Auren isn't running: start it with `auren service start`, then run this again")
+        return 1
+    print("Turn Auren on in each Settings page that opened, then run `auren service restart`.")
+    return 0
+
+
+def _app(args: list[str]) -> int:
+    from .mac import app
+    what = args[0] if args else "status"
+    if what == "install":
+        try:
+            built = app.install(force="--force" in args)
+        except app.AppError as e:
+            print(f"auren app: {e}", file=sys.stderr)
+            return 1
+        print(f"{'built' if built else 'up to date:'} {app.APP}")
+        return 0
+    if what == "uninstall":
+        from .mac import service
+        app.uninstall()
+        for name in service.LABELS:      # the agents named the app's executable: back to the venv's auren
+            if service.plist_path(name).exists():
+                service.install(name, service.installed_path(name))
+                if service.loaded(name):
+                    service.restart(name)
+        return 0
+    if what == "status":
+        print(f"{app.APP}: " + ("up to date" if app.current() else "out of date" if app.installed() else "not installed"))
+        return 0
+    print("auren app install [--force]|uninstall|status")
+    return 2
+
+
+def _service(args: list[str]) -> int:
+    from .mac import service
+    what = args[0] if args else "status"
+    unknown = [n for n in args[1:] if n not in service.LABELS]
+    if unknown:
+        print(f"auren service: no service called {', '.join(unknown)} (they're {' and '.join(service.LABELS)})",
+              file=sys.stderr)
+        return 2
+    names = args[1:] or list(service.LABELS)
+    if what == "install":
+        for n in names:
+            print("wrote", service.install(n, os.environ.get("AUREN_PATH")))
+        return 0
+    if what in ("start", "stop", "restart"):
+        ok = all(getattr(service, what)(n) for n in names)
+        return 0 if ok else 1
+    if what == "status":
+        for n in names:
+            state = "running" if service.running(n) else "loaded" if service.loaded(n) else \
+                "installed" if service.plist_path(n).exists() else "not installed"
+            print(f"{service.LABELS[n]}: {state}")
+        return 0
+    if what == "uninstall":
+        for n in names:
+            service.uninstall(n)
+        return 0
+    print("auren service install|start|stop|restart|status|uninstall [daemon|mascot]")
+    return 2
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="auren", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -60,6 +136,11 @@ def main() -> None:
     sub.add_parser("vocab").add_argument("args", nargs=argparse.REMAINDER)
     sub.add_parser("update").add_argument("args", nargs=argparse.REMAINDER)
     sub.add_parser("browser", add_help=False).add_argument("args", nargs=argparse.REMAINDER)
+    sub.add_parser("mascot")
+    sub.add_parser("open")
+    sub.add_parser("app").add_argument("args", nargs=argparse.REMAINDER)
+    sub.add_parser("permissions")
+    sub.add_parser("service").add_argument("args", nargs=argparse.REMAINDER)
     dmn = sub.add_parser("daemon")
     dmn.add_argument("--quiet", action="store_true", help="no voice; replies shown on the OSD")
     ask = sub.add_parser("ask")
@@ -73,6 +154,21 @@ def main() -> None:
     if a.cmd == "daemon":
         from .daemon import main as daemon_main
         return daemon_main(speak=not a.quiet)
+    if a.cmd in ("mascot", "permissions", "service", "open", "app"):
+        if sys.platform != "darwin":
+            print(f"auren {a.cmd} is for macOS; on Omarchy the mascot, permissions and services are set up by install.sh")
+            return 2
+        if a.cmd == "mascot":
+            from .mac.mascot import main as mascot_main
+            return mascot_main()
+        if a.cmd == "permissions":
+            return _permissions()
+        if a.cmd == "open":
+            from .mac.app import open_app
+            return open_app()
+        if a.cmd == "app":
+            return _app(a.args)
+        return _service(a.args)
     if a.cmd == "doctor":
         from .doctor import main as doctor_main
         return doctor_main()
