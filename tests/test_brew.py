@@ -167,3 +167,58 @@ def test_a_brew_install_is_told_apart_by_install_json(tmp_path, monkeypatch):
     assert config._brew()
     (tmp_path / "install.json").write_text("[]")
     assert not config._brew()
+
+
+def test_every_command_gets_homebrew_s_bin_first_on_path(wrapped, tmp_path):
+    run, venv, home = wrapped
+    share = home / ".local/share/auren"
+    venv(share, "0.2.0")
+    (share / "venv/bin/auren").write_text('#!/bin/sh\necho "${PATH%%:*}"\n')
+    assert run("auren", "status").stdout == f"{tmp_path / 'homebrew/bin'}\n"
+
+
+def test_setup_moves_a_clone_install_s_links_to_homebrew_s_and_only_those(tmp_path):
+    script = INSTALL.read_text()
+    block = script[script.index("  # >>> links\n"):script.index("  # <<< links\n")]
+    share, userbin, prefix = tmp_path / "share/auren", tmp_path / "bin", tmp_path / "homebrew"
+    (prefix / "bin").mkdir(parents=True)
+    userbin.mkdir()
+    for cmd in ("auren", "auren-ctl"):
+        (prefix / "bin" / cmd).write_text("#!/bin/sh\n")
+        (prefix / "bin" / cmd).chmod(0o755)
+    (userbin / "auren").symlink_to(share / "venv/bin/auren")        # from ./install-macos.sh
+    (userbin / "auren-ctl").symlink_to("/somewhere/else/auren-ctl")   # not Auren's: left alone
+    subprocess.run([shutil.which("bash"), "-c", f'share={share}; userbin={userbin}; brew_prefix={prefix}\n{block}'],
+                   env=_env(tmp_path), check=True)
+    assert os.readlink(userbin / "auren") == str(prefix / "bin/auren")
+    assert os.readlink(userbin / "auren-ctl") == "/somewhere/else/auren-ctl"
+
+
+def test_the_installer_writes_the_link_auren_app_looks_for():
+    launcher = (ROOT / "src/auren/mac/app/launcher.c").read_text()
+    assert '"%s/Library/Application Support/Auren/venv-python"' in launcher
+    assert 'locator="$HOME/Library/Application Support/Auren/venv-python"' in INSTALL.read_text()
+    assert 'ln -sfn "$share/venv/bin/python" "$locator"' in INSTALL.read_text()
+
+
+@pytest.mark.skipif(not shutil.which("cc"), reason="no C compiler here")
+def test_auren_app_finds_python_through_the_link_wherever_the_venv_is(tmp_path):
+    """The launcher, built here (with a stand-in for macOS's _NSGetExecutablePath off a Mac), opened
+    without AUREN_PYTHON: it runs the venv's python by the link's target path, not where that leads."""
+    src = ROOT / "src/auren/mac/app/launcher.c"
+    cmd = ["cc", "-o", str(tmp_path / "Auren"), str(src)]
+    if os.uname().sysname != "Darwin":
+        (tmp_path / "mach-o").mkdir()
+        (tmp_path / "mach-o/dyld.h").write_text("#include <stdint.h>\nint _NSGetExecutablePath(char *, uint32_t *);\n")
+        (tmp_path / "stub.c").write_text("#include <stdint.h>\nint _NSGetExecutablePath(char *b, uint32_t *n) { return -1; }\n")
+        cmd += ["-I", str(tmp_path), str(tmp_path / "stub.c")]
+    subprocess.run(cmd, check=True, capture_output=True)
+    home = tmp_path / "home"
+    venv = tmp_path / "custom-data/auren/venv/bin"
+    venv.mkdir(parents=True)
+    (venv / "python").write_text('#!/bin/sh\necho "$0 $*"\n')
+    (venv / "python").chmod(0o755)
+    (home / "Library/Application Support/Auren").mkdir(parents=True)
+    (home / "Library/Application Support/Auren/venv-python").symlink_to(venv / "python")
+    r = subprocess.run([str(tmp_path / "Auren")], env=_env(home), capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout == f"{venv / 'python'} -P -m auren.cli open\n"

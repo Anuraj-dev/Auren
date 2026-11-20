@@ -10,9 +10,13 @@ case "${XDG_DATA_HOME:-}" in            # a relative XDG_DATA_HOME is ignored, a
   *) share="$HOME/.local/share/auren" ;;
 esac
 
+# Homebrew's tools (uv, and brew itself) first, whatever PATH this was started with
+PATH="@BREW_BIN@:$PATH"
+export PATH
+
 if [ "@COMMAND@" = auren ] && [ "${1:-}" = setup ]; then
   shift
-  PATH="@BREW_BIN@:$PATH" exec /bin/bash "$libexec/install-macos.sh" --brew "$@"
+  exec /bin/bash "$libexec/install-macos.sh" --brew "$@"
 fi
 
 venv="$share/venv/bin/@COMMAND@"
