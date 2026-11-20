@@ -28,8 +28,9 @@ On a Mac, Homebrew's auren (brew install kvm404/auren/auren, then auren setup; i
 with what Homebrew has already, after a brew upgrade without auren setup). Updating needs no password,
 so it runs in the background like a self-update: wait until Auren is idle, stop it, brew upgrade auren,
 run the new version's install-macos.sh --brew, and start Auren again as it was. If that install fails,
-the version that was there is set up again from its own folder, which the upgrade keeps. A Homebrew
-install never updates from a git clone, and a git install never runs brew.
+the version that was there is set up again from the copy of its source kept outside the Cellar
+(ROLLBACK). A version Homebrew has already is set up without GitHub. A Homebrew install never updates
+from a git clone, and a git install never runs brew.
 """
 
 from __future__ import annotations
@@ -77,6 +78,7 @@ BREW_UPDATE_TIMEOUT = 5 * 60
 # upgrade, the install, and installing back), and brew update.
 UPDATE_TIMEOUT = IDLE_WAIT + INSTALL_TIMEOUT * 3 + BREW_UPDATE_TIMEOUT + 10 * 60
 BREW_FORMULA = "auren"
+ROLLBACK = CACHE_DIR / "brew-rollback"             # a Homebrew install's source, to go back to
 # The session's environment the update needs: the user manager's may lack PATH entries (uv), custom XDG
 # folders, and what git signs in with (gh, an SSH agent, tokens).
 PASS_ENV = ("PATH", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
@@ -615,20 +617,23 @@ def _logged(cmd: list[str], cwd: Path, env: dict, what: str, timeout: float = IN
         raise UpdateError(f"{what} failed (exit {code}): see {LOG}")
 
 
-def _install(repo: Path, dev: bool, brew: bool = False) -> None:
-    """Run install.sh (on a Mac install-macos.sh; for Homebrew's copy, with --brew)."""
+def _install(repo: Path, dev: bool, brew: Path | None = None) -> None:
+    """Run install.sh (on a Mac install-macos.sh; for Homebrew's copy, with --brew, and Homebrew's bin
+    first on PATH, as the auren wrapper has it: uv and brew are there, whatever PATH this has)."""
     script = "install-macos.sh" if brew else INSTALLER if (repo / INSTALLER).exists() else "install.sh"
     flags = ["--dev"] if dev else ["--brew"] if brew else []
+    env = {**os.environ, "AUREN_UPDATE": "1"}
+    if brew:
+        env["PATH"] = os.pathsep.join(filter(None, (str(brew.parent), env.get("PATH", ""))))
     _log(" ".join([script, *flags]) + f" from {repo}")
-    _logged(["bash", str(repo / script), *flags], repo, {**os.environ, "AUREN_UPDATE": "1"}, script)
+    _logged(["bash", str(repo / script), *flags], repo, env, script)
 
 
 def _brew_upgrade(brew: Path) -> None:
     """brew upgrade auren, in the background: Homebrew in /opt/homebrew needs no password."""
     env = {**os.environ, "HOMEBREW_NO_ENV_HINTS": "1",
-           # Keep the version being replaced: if the new one doesn't set up, Auren goes back to it (its
-           # install-macos.sh, in install.json's source). brew cleanup, by hand or brew's own every 30
-           # days, removes it later.
+           # Keep the version being replaced for now (brew cleanup, by hand or brew's own every 30 days,
+           # removes it later): going back uses ROLLBACK's copy, but the keg is a second way back.
            "HOMEBREW_NO_INSTALL_CLEANUP": "1"}
     # The tap must be fetched for brew to see the new formula. brew upgrade does that itself only once a
     # day, and never with HOMEBREW_NO_AUTO_UPDATE, so update it now (if that fails, the upgrade still
@@ -770,16 +775,45 @@ def _restore(running: dict, enabled: dict) -> str:
     return f" {' and '.join(stuck)} didn't start: see its log ({where})." if stuck else ""
 
 
+def _rollback_copy(info: dict, have: str) -> Path:
+    """The source set up now, outside the Cellar, to go back to: brew upgrade or brew cleanup may have
+    removed its keg. install-macos.sh --brew keeps one; if it's missing it's made here from install.json's
+    source. Without one, nothing is changed."""
+    name = have or "current"
+    dest = ROLLBACK / name
+    if (dest / "install-macos.sh").exists():
+        return dest
+    source = Path(info.get("source", ""))
+    if not (source.is_absolute() and (source / "install-macos.sh").exists()):
+        raise UpdateError(f"Auren couldn't go back to {name} if the update failed (Homebrew has removed its "
+                          "files), so nothing was changed: run auren setup")
+    tmp = ROLLBACK.with_name(ROLLBACK.name + ".tmp")
+    shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        tmp.mkdir(parents=True)
+        shutil.copytree(source, tmp / name, symlinks=True)
+        shutil.rmtree(ROLLBACK, ignore_errors=True)
+        tmp.rename(ROLLBACK)
+    except OSError as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise UpdateError(f"Couldn't keep a copy of {name} to go back to ({e}), so nothing was changed") from e
+    return dest
+
+
 def _update_brew(info: dict) -> str:
     """Homebrew's install: brew upgrade, then the new version's install-macos.sh --brew."""
     brew = _brew_bin(info)
     if not os.access(brew, os.X_OK):
         raise UpdateError(f"Homebrew isn't at {brew}: run brew upgrade {BREW_FORMULA}, then auren setup")
     have = info.get("version") or _version()
-    _step("Looking for the newest version…")
-    release = _latest_release(DEFAULT_REMOTE)
-    if have and _numbers(release["tag"]) <= _numbers(have) and _numbers(_keg_version(brew)) <= _numbers(have):
-        return "Already up to date"
+    keg = _keg_version(brew)
+    downloaded = bool(keg) and _numbers(keg) > _numbers(have)     # brew upgrade ran, auren setup didn't
+    if not downloaded:                         # then GitHub isn't needed: it's set up from here
+        _step("Looking for the newest version…")
+        release = _latest_release(DEFAULT_REMOTE)
+        if have and _numbers(release["tag"]) <= _numbers(have):
+            return "Already up to date"
+    back = _rollback_copy(info, have)          # before anything is stopped or changed
     _step("Waiting for Auren to finish…")
     _wait_idle()
     running = {u: _systemctl("is-active", "--quiet", u) == 0 for u in UNITS}
@@ -790,21 +824,23 @@ def _update_brew(info: dict) -> str:
         if _systemctl("stop", *UNITS):
             raise UpdateError("Couldn't stop Auren, so nothing was changed")
         _step("Updating with Homebrew…")
-        _brew_upgrade(brew)                    # a failure here leaves Auren's environment as it was
+        try:
+            _brew_upgrade(brew)                # a failure here leaves Auren's environment as it was
+        except UpdateError as e:
+            if not downloaded:
+                raise
+            _log(f"{e}: setting up {keg}, which Homebrew has already")
         new = _keg_version(brew)
         if not new or _numbers(new) <= _numbers(have):
             message = f"Homebrew has no newer Auren than {have} yet: try again later"
         else:
             _step("Installing…")
             try:
-                _install(_brew_libexec(brew), False, brew=True)
+                _install(_brew_libexec(brew), False, brew=brew)
             except UpdateError as e:
-                old = Path(info.get("source", ""))
-                if not (old.is_absolute() and (old / "install-macos.sh").exists()):
-                    raise UpdateError(f"{e}. Homebrew has {new}, but it isn't set up: run auren setup") from e
                 _step("The install failed: going back to the version that was there…")
                 try:
-                    _install(old, False, brew=True)
+                    _install(back, False, brew=brew)
                 except UpdateError as again:
                     raise UpdateError(f"{e}. Going back failed too ({again}): run auren setup") from e
                 raise UpdateError(f"{e}. Auren is back on {have} (Homebrew has {new}: auren setup tries "

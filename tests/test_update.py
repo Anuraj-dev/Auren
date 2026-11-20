@@ -48,7 +48,7 @@ def env(tmp_path, monkeypatch):
     for name, path in {"INSTALL_INFO": info, "SOURCE": tmp_path / "cache" / "source",
                        "STATUS": tmp_path / "run" / "update.json", "LOG": tmp_path / "state" / "update.log",
                        "NOTIFIED": tmp_path / "state" / "notified", "LOCK": tmp_path / "run" / "update.lock",
-                       "SUGGESTED": tmp_path / "state" / "package-suggested",
+                       "SUGGESTED": tmp_path / "state" / "package-suggested", "ROLLBACK": tmp_path / "cache" / "brew-rollback",
                        "STATE_FILE": tmp_path / "run" / "state.json"}.items():
         monkeypatch.setattr(update, name, path)
     monkeypatch.setattr(update, "_aur_version", lambda: "")     # no network in tests: the AUR doesn't answer
@@ -609,6 +609,7 @@ BREW_INSTALLER = """#!/usr/bin/env bash
 set -e
 here="$(cd "$(dirname "$0")" && pwd -P)"
 echo "$here $* AUREN_UPDATE=${AUREN_UPDATE:-}" >>"$INSTALLS"
+echo "${PATH%%:*}" >>"$INSTALL_PATHS"
 [[ ! -f "$here/fail" ]] || exit 3
 version=$(sed -n 's/^version = "\\(.*\\)"$/\\1/p' "$here/pyproject.toml")
 printf '{"version": "%s", "mode": "brew", "source": "%s", "brew": "%s"}' "$version" "$here" "$BREW" >"$INSTALL_INFO"
@@ -650,6 +651,8 @@ def brew(env, monkeypatch, tmp_path):
     monkeypatch.setenv("BREW", str(bin_))
     monkeypatch.setenv("BREW_CALLS", str(tmp_path / "brew-calls"))
     monkeypatch.setenv("BREW_NEXT", str(tmp_path / "brew-next"))
+    monkeypatch.setenv("INSTALL_PATHS", str(tmp_path / "install-paths"))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")                   # a minimal PATH, as launchd may give
     monkeypatch.setenv("HOMEBREW_NO_AUTO_UPDATE", "1")          # the user's: the update fetches regardless
     env.info.write_text(json.dumps({"version": "0.1.0", "mode": "brew", "source": str(keg), "brew": str(bin_)}))
 
@@ -698,7 +701,9 @@ def test_a_failed_brew_setup_goes_back_to_the_version_that_was_there(brew):
     (brew.prefix / "next-fails").write_text("")
     assert update.run() == 1
     installs = brew.installs()
-    assert installs[0].endswith("0.1.1/libexec") and installs[3] == str(brew.keg.resolve())    # the new, then the old
+    rollback = update.ROLLBACK / "0.1.0"                        # a copy, outside the Cellar
+    assert installs[0].endswith("0.1.1/libexec") and installs[3] == str(rollback.resolve())    # the new, then the old
+    assert (rollback / "install-macos.sh").read_text() == BREW_INSTALLER
     s = update.status()
     assert s["state"] == "failed" and "back on 0.1.0" in s["message"] and "auren setup" in s["message"]
     assert json.loads(brew.info.read_text())["version"] == "0.1.0"
@@ -746,3 +751,50 @@ def test_a_git_install_never_runs_brew(env, monkeypatch):
 def test_a_brew_install_prints_its_version(capsys):
     update._print({"state": "current", "installed": {"mode": "brew", "version": "0.1.7"}})
     assert "Installed: 0.1.7 (Homebrew)" in capsys.readouterr().out
+
+
+def test_the_brew_installer_runs_with_homebrew_s_bin_first_on_path(brew):
+    commit(brew.remote, "a.py")
+    brew.next("0.1.1")
+    assert update.run() == 0
+    assert (brew.tmp / "install-paths").read_text().split() == [str(brew.prefix / "bin")]
+
+
+def test_a_removed_keg_is_gone_back_to_from_the_copy_setup_made(brew):
+    import shutil
+    shutil.copytree(brew.keg, update.ROLLBACK / "0.1.0")        # install-macos.sh --brew made it
+    info = json.loads(brew.info.read_text())
+    brew.info.write_text(json.dumps({**info, "source": str(brew.tmp / "removed-by-brew-cleanup")}))
+    commit(brew.remote, "a.py")
+    brew.next("0.1.1")
+    (brew.prefix / "next-fails").write_text("")
+    assert update.run() == 1
+    assert "back on 0.1.0" in update.status()["message"]
+    assert brew.installs()[3] == str((update.ROLLBACK / "0.1.0").resolve())
+
+
+def test_without_anything_to_go_back_to_a_brew_install_isnt_touched(brew):
+    import shutil
+    commit(brew.remote, "a.py")
+    shutil.rmtree(brew.keg.parent)                              # brew cleanup removed it; no copy either
+    (brew.prefix / "Cellar/auren/0.1.1/libexec").mkdir(parents=True)
+    (brew.prefix / "Cellar/auren/0.1.1/libexec/pyproject.toml").write_text('version = "0.1.1"\n')
+    (brew.prefix / "opt/auren").unlink()
+    (brew.prefix / "opt/auren").symlink_to("../Cellar/auren/0.1.1")
+    assert update.run() == 1
+    assert "nothing was changed" in update.status()["message"] and "auren setup" in update.status()["message"]
+    assert brew.calls == [] and brew.brew_calls() == [] and brew.installs() == []
+
+
+def test_a_downloaded_keg_is_set_up_without_github(brew, monkeypatch):
+    def offline(remote):
+        raise update.UpdateError("Couldn't reach GitHub")
+    monkeypatch.setattr(update, "_latest_release", offline)
+    brew.next("0.1.1")
+    subprocess.run([str(brew.prefix / "bin/brew"), "upgrade"], check=True)     # brew upgrade, by hand
+    (brew.tmp / "brew-calls").unlink()
+    (brew.prefix / "upgrade-fails").write_text("")              # and brew can't reach anything now
+    assert update.check()["state"] == "available"
+    assert update.run() == 0
+    assert update.status()["message"] == "Updated to 0.1.1"
+    assert brew.installs()[0].endswith("0.1.1/libexec") and brew.active["auren"]
