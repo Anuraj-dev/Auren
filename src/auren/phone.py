@@ -255,6 +255,15 @@ def add(kind: str, title: str = "", content: str = "", path: str = "", secret_ok
         return _add(stack, kind, title, content, path, secret_ok)
 
 
+def opened_path(fd: int) -> Path:
+    """The path of the file an open descriptor is: links followed, as the kernel opened it. Linux has it in
+    /proc; macOS gives it with fcntl's F_GETPATH."""
+    if sys.platform == "darwin":
+        raw = fcntl.fcntl(fd, getattr(fcntl, "F_GETPATH", 50), bytes(1024))      # 1024: MAXPATHLEN
+        return Path(os.fsdecode(raw.split(b"\0", 1)[0]))
+    return Path(os.readlink(f"/proc/self/fd/{fd}"))
+
+
 def _add(stack: contextlib.ExitStack, kind: str, title: str, content: str, path: str, secret_ok: bool) -> dict:
     from .safety import mentions_secrets
 
@@ -275,7 +284,7 @@ def _add(stack: contextlib.ExitStack, kind: str, title: str, content: str, path:
             f = stack.enter_context(open(given, "rb"))
         except OSError:
             raise ValueError(f"no such file: {path or content}") from None
-        src = Path(os.readlink(f"/proc/self/fd/{f.fileno()}"))      # the file actually opened
+        src = opened_path(f.fileno())                              # the file actually opened
         st = os.fstat(f.fileno())
         if not stat.S_ISREG(st.st_mode):
             raise ValueError(f"no such file: {path or content}")
@@ -335,16 +344,34 @@ def shown(it: dict) -> dict:
 TAILSCALE_DOWN = {"Stopped": "Tailscale is off", "NeedsLogin": "Tailscale is logged out",
                   "NeedsMachineAuth": "Tailscale is waiting for this machine to be approved",
                   "Starting": "Tailscale is starting", "NoState": "Tailscale is starting"}
+# Where else the Tailscale CLI is on a Mac: Homebrew's (not always in the launch agent's PATH), and the app's
+# own binary (the App Store and standalone apps), which works as the CLI when run with arguments.
+MAC_TAILSCALE = ("/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale",
+                 "/Applications/Tailscale.app/Contents/MacOS/Tailscale")
+
+
+def tailscale_cli() -> str | None:
+    """The tailscale command, or None if Tailscale isn't installed. Every caller (the server, doctor) uses it."""
+    found = shutil.which("tailscale")
+    if found or sys.platform != "darwin":
+        return found
+    return next((p for p in MAC_TAILSCALE if os.access(p, os.X_OK)), None)
+
+
+def tailscale_up() -> str:
+    """How to turn Tailscale on here."""
+    return "turn Tailscale on (its menu bar icon, or tailscale up)" if sys.platform == "darwin" else "tailscale up"
 
 
 def tailscale_ip() -> tuple[str | None, str]:
     """This machine's Tailscale IPv4 address while Tailscale runs, or (None, why not). From `tailscale status
     --json`: `tailscale ip` prints the address even while Tailscale is stopped, when nothing can bind it. A
     stopped Tailscale's address is still kept ([remember_tailscale]): it's the same once it's up again."""
-    if not shutil.which("tailscale"):
+    cli = tailscale_cli()
+    if not cli:
         return None, "Tailscale isn't installed"
     try:
-        out = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=5)
+        out = subprocess.run([cli, "status", "--json"], capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired) as e:
         return None, f"tailscale didn't answer ({type(e).__name__})"
     try:
@@ -353,14 +380,14 @@ def tailscale_ip() -> tuple[str | None, str]:
         st = None
     if not isinstance(st, dict):
         why = (out.stderr or out.stdout).strip().splitlines()
-        return None, "tailscale didn't say how it is" + (f" ({why[0][:80]})" if why else "") + ": tailscale up"
+        return None, "tailscale didn't say how it is" + (f" ({why[0][:80]})" if why else "") + f": {tailscale_up()}"
     ip = next((a for a in st.get("TailscaleIPs") or [] if isinstance(a, str) and _tailnet4(a)), None)
     state = str(st.get("BackendState") or "")
     if ip:
         remember_tailscale(ip)
     if state == "Running" and ip:
         return ip, ""
-    return None, TAILSCALE_DOWN.get(state, f"Tailscale isn't running ({state or 'unknown'})") + ": tailscale up"
+    return None, TAILSCALE_DOWN.get(state, f"Tailscale isn't running ({state or 'unknown'})") + f": {tailscale_up()}"
 
 
 def _tailnet4(ip: str) -> bool:
@@ -551,7 +578,6 @@ def listening(st: dict) -> list[dict]:
 
 # --- the CLI ------------------------------------------------------------------------------------
 
-MAC_LATER = "The phone remote isn't on macOS yet: it works with Auren on Omarchy for now."
 SERVE_WAIT = 15                     # seconds `auren phone pair` waits for the daemon to start the server
 
 
@@ -596,10 +622,13 @@ def tailscale_off(st: dict) -> str:
         return ""
     if known_tailscale():
         return ("Tailscale is off on this PC. The code still carries its Tailscale address, so the phone reaches"
-                " the PC from elsewhere once Tailscale is on again (tailscale up).")
+                f" the PC from elsewhere once Tailscale is on again ({tailscale_up()}).")
+    if sys.platform == "darwin":
+        turn_on = "turn Tailscale on (its menu bar icon, or tailscale up)"
+    else:
+        turn_on = "turn Tailscale on (tailscale up)"
     return ("Tailscale is off on this PC, so for now the phone works only on this Wi-Fi. To use it from"
-            " elsewhere, turn Tailscale on (tailscale up): the phone picks up the address the next time it"
-            " connects here.")
+            f" elsewhere, {turn_on}: the phone picks up the address the next time it connects here.")
 
 
 def app_link(version: str | None = None) -> tuple[str, str]:
@@ -618,21 +647,33 @@ def app_link(version: str | None = None) -> tuple[str, str]:
     return f"{RELEASES}/latest", ""
 
 
-def _app(as_json: bool) -> int:
-    """auren phone app: a QR code to download the app on the phone (the panel's Get the app)."""
-    url, version = app_link()
-    if not as_json:
-        print("Scan this with your phone's camera to download the Auren app" + (f" {version}" if version else "") + ":")
-        print(_qr(url))
-        print(url)
-        print("Open the download, and allow installing from your browser when Android asks. Then pair: auren phone pair")
-        return 0
+def app_qr() -> dict:
+    """The download link and a PNG of its QR code: {"url", "qr", "version"} (Get the app, in the bar panel
+    and in the Mac's Phone window)."""
     import segno
+    url, version = app_link()
     APP_QR.parent.mkdir(parents=True, exist_ok=True)
     tmp = APP_QR.with_name(f".{APP_QR.name}.{os.getpid()}.tmp")
     segno.make(url, error="m").save(str(tmp), kind="png", scale=10, border=2, dark="#000", light="#fff")
     os.replace(tmp, APP_QR)
-    print(json.dumps({"url": url, "qr": str(APP_QR), "version": version}))
+    return {"url": url, "qr": str(APP_QR), "version": version}
+
+
+def device_rows() -> list[dict]:
+    """The paired phones as auren phone devices --json lists them (without the token hashes)."""
+    return [{k: d.get(k) for k in ("id", "name", "created", "lastSeen")} for d in devices()]
+
+
+def _app(as_json: bool) -> int:
+    """auren phone app: a QR code to download the app on the phone (the panel's Get the app)."""
+    if as_json:
+        print(json.dumps(app_qr()))
+        return 0
+    url, version = app_link()
+    print("Scan this with your phone's camera to download the Auren app" + (f" {version}" if version else "") + ":")
+    print(_qr(url))
+    print(url)
+    print("Open the download, and allow installing from your browser when Android asks. Then pair: auren phone pair")
     return 0
 
 
@@ -660,8 +701,9 @@ def _open_pairing() -> tuple[dict, str, float] | str:
         raise
     if not (st.get("on") and listening(st) and _alive(st.get("pid"))):     # a dead daemon's status doesn't count
         PAIRING.unlink(missing_ok=True)
+        start = "auren service start" if sys.platform == "darwin" else "systemctl --user start auren"
         why = st.get("why") if _alive(st.get("pid")) and not st.get("idle") else \
-            "the Auren daemon isn't running (systemctl --user start auren)"
+            f"the Auren daemon isn't running ({start})"
         return f"The phone server is off: {why}"
     return st, code, expires
 
@@ -727,16 +769,13 @@ def main(argv: list[str] | None = None) -> int:
     g = sub.add_parser("app", help="a QR code to download the phone app (scan it with the phone's camera)")
     g.add_argument("--json", action="store_true", help="for the bar panel: the link and a PNG of its QR code")
     a = ap.parse_args(argv)
-    if sys.platform == "darwin":
-        print(MAC_LATER, file=sys.stderr)
-        return 2
     if a.cmd == "app":
         return _app(a.json)
 
     if a.cmd == "devices":
         found = devices()
         if a.json:
-            print(json.dumps([{k: d.get(k) for k in ("id", "name", "created", "lastSeen")} for d in found]))
+            print(json.dumps(device_rows()))
             return 0
         if not found:
             print("No phone is paired. Pair one: auren phone pair")
@@ -787,3 +826,7 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     print("The code expired. Run auren phone pair again.")
     return 1
+
+
+if sys.platform == "darwin":
+    from .mac.phone import *  # noqa: E402, F403 - the Mac's network interfaces
