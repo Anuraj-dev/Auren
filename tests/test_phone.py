@@ -1342,6 +1342,10 @@ def test_phone_pair_says_when_the_daemon_isnt_running(monkeypatch, capsys):
     monkeypatch.setattr(phone, "status", lambda: {})
     assert phone.main(["pair", "--no-wait", "--no-qr"]) == 1
     assert "daemon isn't running" in capsys.readouterr().err and not phone.pairing_open()
+    monkeypatch.setattr(sys, "platform", "darwin")             # a Mac's daemon is a launch agent
+    assert phone.main(["pair", "--json"]) == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["error"].endswith("(auren service start)") and not phone.pairing_open()
 
 
 # --- on macOS ------------------------------------------------------------------------------------------
