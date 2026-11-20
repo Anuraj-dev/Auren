@@ -1,57 +1,74 @@
-"""The voice: Supertonic 3, voice F2, 5 steps, local (decision 0001).
+"""The voice: Gradium's Phonon 31m through ptts, local on the CPU (decision 0001).
 
-Speech is generated sentence by sentence and piped into pw-cat, so the first
-sentence plays while the rest is still being generated. `stop()` cuts it off
-(the user pressed the talk key again).
+Four voices from Phonon's catalog, listed in VOICES (the first is the default). The phone speaks with the
+same model and reads the PC's choice from the state.
 
-Adjustable (the bar panel's Voice page, `auren-ctl tts ...`): speed, steps
-(quality: more steps cost more CPU), volume (scales the samples, relative to the
-system volume) and a pause between sentences.
+Speech is generated sentence by sentence, and each sentence is streamed into pw-cat in chunks as the model
+decodes them, so the first words play about 0.15 s after synthesis starts. `stop()` cuts it off (the user
+pressed the talk key again).
+
+Adjustable (the bar panel's Voice page, `auren-ctl tts ...`): speed (Phonon's duration_delta), volume
+(scales the samples, relative to the system volume) and a pause between sentences.
 
 All speech is synthesized in English (decision 0001).
 
-For the mascot, a small clock thread follows the playback: it reports which
-sentence is being heard (captions) and how loud it is (the mascot bounces), using
-each sentence's loudness envelope and when its audio starts playing.
+For the mascot, a small clock thread follows the playback: it reports which sentence is being heard
+(captions) and how loud it is (the mascot bounces), using each chunk's loudness envelope and when its
+audio starts playing.
 
-The model (~380 MB) lives in ~/.local/share/auren/models/supertonic-3 and is fetched by
-`auren voice-model` (install.sh runs it). Supertonic's repository is archived: the download
-uses the commit the SDK pins, and the archive's copy if that is gone. An existing download
-in the SDK's own cache (~/.cache/supertonic3) is used as is.
+The model (~100 MB) and the four voices (~256 KB each) are fetched by `auren voice-model` (install.sh runs
+it) into the Hugging Face cache (~/.cache/huggingface/hub), at the revisions ptts pins. The daemon loads
+them from that cache without going online.
 """
 
 from __future__ import annotations
 
+import contextlib
+import logging
+import os
 import re
 import shutil
 import subprocess
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import numpy as np
 
-from .config import MAC, MODELS_DIR
+from . import config
+from .config import MAC
 from .live import envelope
 
+log = logging.getLogger("auren")
 LATENCY = 0.12        # pw-cat's start-up and buffering, roughly
 
-# name: (default, lowest, highest). The defaults are decision 0001's (speed 1.05 is Supertonic's own).
-TUNING = {"speed": (1.05, 0.7, 1.6), "steps": (5, 2, 12), "volume": (1.0, 0.1, 1.0), "pause": (0.0, 0.0, 1.0)}
+# The voices Auren offers, by Phonon catalog name, the default first. To swap one, change it here and in
+# the bar plugin's voiceChoices (omarchy-plugin/Panel.qml), then run `auren voice-model` to fetch it.
+VOICES = {"Everly": "US female", "Juniper": "US female", "Hugh": "UK male", "Trevor": "US male"}
+DEFAULT_VOICE = next(iter(VOICES))
+
+# name: (default, lowest, highest). Phonon's own pace is speed 1.0; past these ends duration_delta barely
+# changes the pace (measured 2026-11-19: about 0.85x to 1.25x).
+TUNING = {"speed": (1.0, 0.8, 1.25), "volume": (1.0, 0.1, 1.0), "pause": (0.0, 0.0, 1.0)}
 
 
 def tuning(values: dict | None = None) -> dict:
-    """Speed, steps, volume and pause from `values`, each clamped to its range (defaults for the rest)."""
+    """Speed, volume and pause from `values`, each clamped to its range (defaults for the rest)."""
     out = {}
     for name, (default, low, high) in TUNING.items():
         try:
             v = float((values or {}).get(name, default))
         except (TypeError, ValueError):
             v = default
-        v = min(high, max(low, v))
-        out[name] = int(round(v)) if name == "steps" else round(v, 2)
+        out[name] = round(min(high, max(low, v)), 2)
     return out
+
+
+def duration_delta(speed: float) -> float:
+    """Phonon's duration_delta for a speed: negative speaks faster. 1.25 -> -0.5, 1.0 -> 0, 0.8 -> 0.4."""
+    return round(2 * (1 - speed), 2)
+
 
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
@@ -60,68 +77,128 @@ def sentences(text: str) -> list[str]:
     return [s.strip() for s in _SENTENCE_END.split(text.strip()) if s.strip()]
 
 
-MODEL = "supertonic-3"
-ARCHIVE_REPO, ARCHIVE_REVISION = "supertone-oss-archive/supertonic-3", "aafc6e32416a594460b32413efc49d7fe4ce6d46"
-MODEL_FILES = ["config.json", "LICENSE", "onnx/*", "voice_styles/*"]
-
-
 class VoiceModelMissing(RuntimeError):
     pass
 
 
-def model_dir() -> Path | None:
-    """Where a complete model is, or None."""
-    from supertonic.config import get_model_cache_dir
-    from supertonic.loader import has_all_onnx_modules
-
-    for d in (MODELS_DIR / MODEL, get_model_cache_dir(MODEL)):
-        if d.is_dir() and has_all_onnx_modules(d) and any((d / "voice_styles").glob("*.json")):
-            return d
-    return None
+REPOS = ("gradium/phonon-31m-en", "gradium/phonon-voices")     # what download_model puts in the cache
 
 
-def download_model(log: Callable[[str], None] = print) -> Path:
-    """Fetch the model into MODELS_DIR (if it isn't anywhere yet) and return its folder."""
-    if found := model_dir():
-        return found
-    from huggingface_hub import snapshot_download
-    from supertonic.config import get_model_repo, get_model_revision
+def hf_cache() -> Path:
+    """The Hugging Face cache ptts downloads into: HF_HUB_CACHE, else HF_HOME/hub, else
+    $XDG_CACHE_HOME/huggingface/hub."""
+    if os.environ.get("HF_HUB_CACHE"):
+        return Path(os.environ["HF_HUB_CACHE"]).expanduser()
+    if os.environ.get("HF_HOME"):
+        return Path(os.environ["HF_HOME"]).expanduser() / "hub"
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache").expanduser() / "huggingface/hub"
 
-    target = MODELS_DIR / MODEL
-    tmp = target.with_name(f".{MODEL}.tmp")
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    sources = [(get_model_repo(MODEL), get_model_revision(MODEL)), (ARCHIVE_REPO, ARCHIVE_REVISION)]
-    errors = []
-    for repo, revision in sources:
-        log(f"downloading the voice model from {repo} ({revision[:12]}), about 380 MB")
-        try:
-            shutil.rmtree(tmp, ignore_errors=True)
-            snapshot_download(repo_id=repo, revision=revision, local_dir=str(tmp), allow_patterns=MODEL_FILES)
-        except Exception as e:  # noqa: BLE001 - try the next source
-            errors.append(f"{repo}: {e}")
-            continue
-        shutil.rmtree(target, ignore_errors=True)
-        tmp.rename(target)
-        if model_dir():
-            return target
-        errors.append(f"{repo}: incomplete download")
-    shutil.rmtree(tmp, ignore_errors=True)
-    raise VoiceModelMissing("couldn't download the voice model: " + "; ".join(errors))
+
+def cache_dirs() -> list[Path]:
+    """The voice model's folders in the cache (auren setup --remove --purge deletes them)."""
+    return [hf_cache() / f"models--{repo.replace('/', '--')}" for repo in REPOS]
+
+
+@contextlib.contextmanager
+def _offline() -> Iterator[None]:
+    """Hugging Face files from the cache only (ptts reads HF_HUB_OFFLINE on each load)."""
+    old = os.environ.get("HF_HUB_OFFLINE")
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+        else:
+            os.environ["HF_HUB_OFFLINE"] = old
+
+
+def _register(tts, name: str) -> bool:
+    """Make a catalog voice known to `tts` (downloading it, unless offline). False: it isn't available."""
+    try:
+        with tts.stream(".", voice=name):
+            pass
+    except LookupError:
+        return False
+    return True
+
+
+def _load(offline: bool):
+    import ptts
+
+    with _offline() if offline else contextlib.nullcontext():
+        return ptts.TTS(lang="en")
+
+
+def missing() -> list[str]:
+    """What isn't downloaded yet, checked in the cache only: "model" and/or voice names."""
+    try:
+        tts = _load(offline=True)
+    except Exception:  # noqa: BLE001 - ptts raises LookupError or OSError for a missing file
+        return ["model", *VOICES]
+    with _offline():
+        return [v for v in VOICES if not _register(tts, v)]
+
+
+def download_model(log: Callable[[str], None] = print) -> str:
+    """Fetch the model and the four voices into the Hugging Face cache; says what is there."""
+    import ptts
+
+    log(f"downloading the voice model ({ptts.DEFAULT_MODEL.split('@')[0]}, about 100 MB) and its voices")
+    try:
+        tts = _load(offline=False)
+        lost = [v for v in VOICES if not _register(tts, v)]
+    except Exception as e:  # noqa: BLE001 - offline, the Hub down, a full disk
+        raise VoiceModelMissing(f"couldn't download the voice model: {e}") from e
+    if lost:
+        raise VoiceModelMissing(f"couldn't download the voices {', '.join(lost)}")
+    retire_old_model(log)
+    return f"Phonon 31m with {', '.join(VOICES)}"
+
+
+def old_model() -> Path:
+    """Where Auren before 0.1.7 kept its Supertonic model (about 380 MB)."""
+    return config.DATA_HOME / "models" / "supertonic-3"
+
+
+def retire_old_model(log: Callable[[str], None] = print) -> bool:
+    """Delete the Supertonic model Auren downloaded before Phonon, once Phonon is here (only Auren's own
+    folder: the SDK's cache, ~/.cache/supertonic3, may be another program's). True if it was deleted."""
+    old = old_model()
+    if not (old.is_dir() or old.is_symlink()):
+        return False
+    if old.parent.is_symlink():                 # models/ points at a shared folder: its supertonic-3 isn't Auren's
+        return False
+    try:
+        if old.is_symlink():
+            old.unlink()
+        else:
+            shutil.rmtree(old)
+        with contextlib.suppress(OSError):
+            old.parent.rmdir()                  # models/, if nothing else is in it
+    except OSError as e:
+        log(f"couldn't delete the old voice model {old}: {e}")
+        return False
+    log(f"deleted the old voice model (Supertonic, {old})")
+    return True
 
 
 class Voice:
-    def __init__(self, voice: str = "F2", steps: int = 5, speed: float = 1.05, volume: float = 1.0, pause: float = 0.0,
+    def __init__(self, voice: str = DEFAULT_VOICE, speed: float = 1.0, volume: float = 1.0, pause: float = 0.0,
                  on_level: Callable[[float], None] | None = None, on_sentence: Callable[[str], None] | None = None):
-        from supertonic import TTS
-
-        folder = model_dir()
-        if folder is None:
-            raise VoiceModelMissing("the voice model isn't downloaded: run `auren voice-model`")
-        self.tts = TTS(model=MODEL, model_dir=folder, auto_download=False)
-        self.name = voice
-        self.style = self.tts.get_voice_style(voice_name=voice)
-        self.steps, self.speed, self.volume, self.pause = steps, speed, volume, pause
-        self.rate = int(getattr(self.tts, "sample_rate", 44100))
+        try:
+            self.tts = _load(offline=True)
+        except Exception as e:  # noqa: BLE001
+            raise VoiceModelMissing(f"the voice model isn't downloaded ({e}): run `auren voice-model`") from e
+        with _offline():                    # the voices on disk now
+            lost = [name for name in VOICES if not _register(self.tts, name)]
+        if lost:                            # an interrupted download: fetch them now, not at the first reply
+            raise VoiceModelMissing(f"the voices {', '.join(lost)} aren't downloaded: run `auren voice-model`")
+        self.name = DEFAULT_VOICE
+        self.set_voice(voice)
+        self.speed, self.volume, self.pause = speed, volume, pause
+        self._delta: float | None = None    # the duration_delta the model has now
+        self.rate = int(self.tts.sample_rate)
         self._player: subprocess.Popen | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -143,34 +220,49 @@ class Voice:
             clock = threading.Thread(target=self._follow, daemon=True)
             clock.start()
             try:
-                gap = np.zeros(int(self.pause * self.rate), dtype=np.float32)
                 for i, sentence in enumerate(sentences(text)):
                     if self._stop.is_set():
                         break
-                    wav, _ = self.tts.synthesize(text=sentence, voice_style=self.style, total_steps=self.steps,
-                                                 speed=self.speed, lang="en")
-                    if self._stop.is_set():
-                        break
-                    audio = np.asarray(wav, dtype=np.float32).reshape(-1)
-                    env = envelope(audio, self.rate)            # before the volume, so the mascot bounces the same
-                    if self.volume < 1:
-                        audio = audio * np.float32(self.volume)
-                    if i and gap.size:                          # the pause goes before every sentence but the first
-                        audio = np.concatenate([gap, audio])
-                        env = [0.0] * int(self.pause * 20) + env
-                    start = max(time.monotonic() + LATENCY, self._timeline[-1][1] if self._timeline else 0)
-                    self._timeline.append((start, start + len(audio) / self.rate, env, sentence))
-                    self._player.stdin.write(audio.tobytes())
-                    self._player.stdin.flush()
+                    self._sentence(sentence, gap=self.pause if i else 0.0)
                 self._player.stdin.close()
                 self._player.wait()
             except (BrokenPipeError, ValueError):
                 pass
+            except Exception as e:  # noqa: BLE001 - the model or the player failed: no speech, but no crash
+                log.error("couldn't speak: %s", e)
+                self._stop.set()            # counts as interrupted: the daemon goes back to idle
+                p = self._player
+                for step in (lambda: p.kill(), lambda: p.stdin.close(), lambda: p.wait()):   # nothing left playing
+                    with contextlib.suppress(Exception):
+                        step()
             finally:
                 self._player = None
                 self._timeline = []
                 clock.join(1)
             return not self._stop.is_set()
+
+    def _sentence(self, sentence: str, gap: float) -> None:
+        """Stream one sentence into the player as it is decoded; the pause, if any, goes before it."""
+        delta = duration_delta(self.speed)
+        if delta != self._delta:
+            self.tts.set_conditions({"duration_delta": delta})
+            self._delta = delta
+        with self.tts.stream(sentence, voice=self.name) as chunks:
+            for chunk in chunks:
+                if self._stop.is_set():
+                    return
+                audio = np.asarray(chunk, dtype=np.float32).reshape(-1)
+                env = envelope(audio, self.rate)            # before the volume, so the mascot bounces the same
+                if self.volume < 1:
+                    audio = audio * np.float32(self.volume)
+                if gap:
+                    audio = np.concatenate([np.zeros(int(gap * self.rate), dtype=np.float32), audio])
+                    env = [0.0] * int(gap * 20) + env
+                    gap = 0.0
+                start = max(time.monotonic() + LATENCY, self._timeline[-1][1] if self._timeline else 0)
+                self._timeline.append((start, start + len(audio) / self.rate, env, sentence))
+                self._player.stdin.write(audio.tobytes())
+                self._player.stdin.flush()
 
     def _follow(self) -> None:
         """While speaking: report the sentence being heard and its loudness, 20 times a second."""
@@ -194,17 +286,16 @@ class Voice:
 
     @property
     def names(self) -> list[str]:
-        return sorted(self.tts.voice_style_names)
+        return list(VOICES)
 
     def tune(self, values: dict) -> None:
-        """Apply speed, steps, volume and pause (clamped); used from the next sentence on."""
+        """Apply speed, volume and pause (clamped); used from the next sentence on."""
         t = tuning(values)
-        self.speed, self.steps, self.volume, self.pause = t["speed"], t["steps"], t["volume"], t["pause"]
+        self.speed, self.volume, self.pause = t["speed"], t["volume"], t["pause"]
 
     def set_voice(self, name: str) -> None:
-        if name not in self.tts.voice_style_names:
-            raise ValueError(f"no voice {name}; voices: {', '.join(self.names)}")
-        self.style = self.tts.get_voice_style(voice_name=name)
+        if name not in VOICES:
+            raise ValueError(f"no voice {name}; voices: {', '.join(VOICES)}")
         self.name = name
 
     def stop(self) -> None:

@@ -19,13 +19,13 @@ def home(tmp_path, monkeypatch):
         d.mkdir(parents=True)
     (cfg / "hypr/bindings.lua").write_text('-- my keys\no.bind("SUPER + T", "Terminal", { omarchy = "terminal" })\n')
     monkeypatch.setenv("HOME", str(h))
-    for var in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "AUREN_UPDATE"):
+    for var in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "AUREN_UPDATE", "HF_HOME",
+                "HF_HUB_CACHE"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(config, "CONFIG_DIR", cfg / "auren")
     monkeypatch.setattr(config, "DATA_HOME", data / "auren")
     monkeypatch.setattr(config, "CACHE_DIR", h / ".cache/auren")
     monkeypatch.setattr(config, "STATE_DIR", h / ".local/state/auren")
-    monkeypatch.setattr(config, "MODELS_DIR", data / "auren/models")
     monkeypatch.setattr(config, "SECRETS", cfg / "auren/secrets.env")
     pkg = tmp_path / "usr"
     for d in ("bin", "share/auren/mascot", "share/auren/bar-plugin", "lib/systemd/user"):
@@ -221,6 +221,18 @@ def test_custom_xdg_folders_reach_the_package_s_services(home, monkeypatch):
     monkeypatch.delenv("XDG_STATE_HOME")
     setup.xdg_drop_ins()
     assert not drop.parent.exists()
+
+
+def test_the_hugging_face_cache_set_in_the_shell_reaches_the_services(home, monkeypatch):
+    """The voice downloaded into HF_HOME or HF_HUB_CACHE: the daemon must look there, not download it again."""
+    monkeypatch.setenv("HF_HOME", "/big/hf")
+    monkeypatch.setenv("HF_HUB_CACHE", "relative/hub")          # not a path systemd can use: left out
+    setup.xdg_drop_ins()
+    drop = (home.cfg / "systemd/user/auren.service.d/auren-xdg.conf").read_text()
+    assert "Environment=HF_HOME=/big/hf" in drop and "HF_HUB_CACHE" not in drop
+    monkeypatch.setenv("HF_HUB_CACHE", "/big/hub")
+    setup.xdg_drop_ins()
+    assert "Environment=HF_HUB_CACHE=/big/hub" in (home.cfg / "systemd/user/auren.service.d/auren-xdg.conf").read_text()
 
 
 def test_a_custom_data_folder_moves_where_the_mascot_starts(home, monkeypatch):

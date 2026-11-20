@@ -12,7 +12,7 @@
 #   ~/.local/share/auren/venv/          the Python environment, with auren and auren-ctl
 #   ~/.local/share/auren/mascot/        the mascot's QML (run by `auren mascot`, with PySide6)
 #   ~/.local/share/auren/bin/auren-ctl  what the mascot and the menu call
-#   ~/.local/share/auren/models/        the voice model
+#   ~/.cache/huggingface/hub/           the voice model (Phonon), fetched by `auren voice-model`
 #   ~/Applications/Auren.app            the app: macOS gives the permissions to it (src/auren/mac/app.py)
 #   ~/Library/LaunchAgents/com.auren.daemon.plist, com.auren.mascot.plist   start at login, through Auren.app
 set -euo pipefail

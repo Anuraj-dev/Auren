@@ -11,8 +11,9 @@ capture, `wtype` for typing, and `wl-clipboard` for pasting.
 
 Install and sign in to Claude Code or Codex. Auren uses your locally installed CLI and its selected
 model. It does not yet have an API-key model backend. Microphone input requires an AssemblyAI key.
-The local Supertonic voice model downloads about 380 MB during setup; a failed download leaves
-Auren able to show text replies. Retry with `auren voice-model`.
+The local voice model (Gradium's Phonon 31m and its four voices) downloads about 100 MB into the
+Hugging Face cache during setup; a failed download leaves Auren able to show text replies. Retry with
+`auren voice-model`.
 
 ## The package and `auren setup`
 
@@ -102,7 +103,7 @@ anything else unless something fails.
 3. Run `auren setup --yes --browser` (or `--no-browser` if the user didn't want the browser tools)
    with `--keys=super` or `--keys=alt` for the chosen talk keys, and `--brain=codex` if only Codex
    works. It adds the keys to `bindings.lua` after a backup, and leaves them alone if Auren is already
-   bound. It downloads a 380 MB voice model. With `--browser`, tell the user just before it gets
+   bound. It downloads a 100 MB voice model. With `--browser`, tell the user just before it gets
    there to click Add on the Web Store page that opens; it waits up to three minutes. If no window
    could open, run `auren browser setup --yes` afterwards instead.
 4. Turn off the other extras the user didn't want with `auren config set integrations.<name> false`

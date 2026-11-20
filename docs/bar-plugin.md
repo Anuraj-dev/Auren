@@ -36,9 +36,10 @@ panel. It remembers the last page while the shell runs.
 |---|---|---|
 | **Home** | the live mascot (**click it to talk**, again to send; while it thinks, works or speaks, stop it; right-click to poke; starts Auren when it's off); quick switches: On, Voice, Mascot, Fresh, Stop; **Yes / No** and the question(s) while it waits for an answer; the last exchange | `auren-ctl talk/voice/forget/cancel/yes/no`, `systemctl --user start/stop auren auren-mascot`, `~/.local/state/auren/history.jsonl` |
 | **Mascot** | Auren or Veyra as live previews (click to choose; it says hello in its voice); speech bubble; sleep animation (~6% CPU); voice follows mascot; how faded it gets when idle; size; reset place; poke | writes `mascot`, `bubble`, `sleepAnimation`, `matchVoice`, `idleOpacity` in `~/.config/auren/mascot.json` (the mascot reloads it); size, reset and poke through the mascot's IPC |
-| **Voice** | voice replies on/off in English; voice F2 (Auren's), M3, F1, M1 (decision 0001's shortlist; a click plays a sample); speed 0.8–1.4×; quality Fast/Balanced/Best (3, 5, 8 steps); volume; pause between sentences; Test; Defaults; **Listening**: Auto-send on/off and, when on, Send after 2 / 3 / 5 / 8 s | `auren-ctl voice`, `voice-name`, `tts …`, `say` (the Test sentence is always English), `autosend` |
+| **Voice** | voice replies on/off in English; voice Everly (the default), Juniper, Hugh, Trevor (`voiceChoices`, the same list as `voice.VOICES`; a click plays a sample); speed 0.8–1.25×; volume; pause between sentences; Test; Defaults; **Listening**: Auto-send on/off and, when on, Send after 2 / 3 / 5 / 8 s | `auren-ctl voice`, `voice-name`, `tts …`, `say` (the Test sentence is always English), `autosend` |
 | **Brain** | who answers: Auto (Claude, Codex on a limit) / Claude only / Codex only, and which is answering now; the effort of whoever answers now: Claude's (Low, Medium, High, XHigh, Max; changing it starts a fresh conversation), or Codex's when Codex answers, in Codex-only mode or after Claude's limit (Minimal, Low, Medium, High, XHigh; from the next request); **Risky actions**: Ask first / Once per task / Don't ask ([safety.md](safety.md#approval-levels)); today's requests, average time to answer, how many Codex answered | `auren-ctl brain`, `auren-ctl effort`, `auren-ctl codex-effort`, `auren-ctl safety`, history log |
 | **Vocabulary** | your own words for speech recognition: type one and press Enter (or Add); words show as chips, click one (or Enter on it) to remove it; the built-in words are listed below. A word the built-in list or yours already has is refused with a message, and so is one past the limit (100 less the built-in words; the heading shows "N of M"). New words are used from the next time you talk, no restart | `auren vocab list\|add\|remove --json`, `~/.config/auren/vocab.txt` |
+| **Phone** | the phone remote ([phone.md](phone.md)): where it listens (Wi-Fi and/or Tailscale) or why not, and a warning when Tailscale is off; **Get the app** shows a QR code to download the app for this version (the phone's camera opens it); **Pair a phone** shows a one-time QR code with a countdown and the addresses it carries (Cancel, or closing the panel, kills the code); the paired phones, each "Connected over Wi-Fi/Tailscale" or when it was last seen, with **Unpair** (it asks once more) | `$XDG_RUNTIME_DIR/auren/phone.json`, `auren phone devices --json`, `auren phone pair --json`, `auren phone revoke` |
 | **Updates** | the installed version; Check for updates; when one is out, what's new (the commit titles) and **Update now…**, which says what will happen and asks before it starts; progress while it runs, then the result (and the update log); "Tell me about updates" | `auren update check [--notify]`, `auren update apply`, `$XDG_RUNTIME_DIR/auren/update.json`, `~/.local/share/auren/install.json`, `~/.config/auren/panel.json` |
 
 **Updates** (see [architecture.md](architecture.md#updates)): the panel checks quietly a few minutes after
@@ -51,7 +52,7 @@ The daemon keeps voice, brain and the voice tuning in `~/.config/auren/config.to
 `state.json` (`voice`, `voiceName`, `mode`, `tts`), so the panel, the mascot and restarts all agree.
 A slider shows its new value as soon as it's released; the daemon's next state confirms it.
 
-**Voice follows mascot** (on by default): picking Auren switches to M3, Veyra to F2, and the
+**Voice follows mascot** (on by default): picking Auren switches to Trevor, Veyra to Juniper, and the
 mascot says hello in it. Only when Auren is idle with voice replies on. Choosing a voice by hand still
 works; it stays until the next mascot change.
 
@@ -61,7 +62,9 @@ From a script or key binding: `omarchy-shell kvm404.auren toggle` (or `open`, `c
 
 - **Preview without the bar:** `tests/panel/preview.sh [out-dir] [pages]` renders the pages to PNGs with a
   separate, off-screen Quickshell (Omarchy's UI parts, sample data, temp folders), so it touches neither
-  the running bar nor Auren. The pictures on this page come from it.
+  the running bar nor Auren. The pictures on this page come from it. Omarchy's `Color` singleton doesn't load
+  there, so text drawn in the theme's accent (the Tailscale and vocabulary warnings) comes out black in the
+  pictures only.
 - **Code changes need `omarchy restart shell`.** The plugin folder is a link into the repo, and the shell's
   change watcher doesn't see edits through it (`rescanPlugins` doesn't reload code either).
 - The plugin bar API has `run(command)` but no `shellQuote` (the bar README lists it). The plugin starts

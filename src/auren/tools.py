@@ -594,6 +594,36 @@ def notify(text: str) -> str:
 
 
 @tool()
+def send_to_phone(kind: str, title: str = "", content: str = "", path: str = "") -> str:
+    """Send something to the user's paired phone: it shows up in the Auren app's inbox there. kind "text"
+    (content: a note, a snippet, an address), "link" (content: an http(s) URL), "image" or "file" (path: a file
+    on this laptop, copied to the phone). title: a few words saying what it is."""
+    from . import phone
+
+    what = path or content if kind in ("image", "file") else content
+    names = [what]
+    if kind in ("image", "file") and what:
+        # The file that is sent is where the path leads: a harmless name can be a link to a .env or a key.
+        real = os.path.realpath(os.path.expanduser(what))
+        names.append(real)
+        path, content = real, ""                   # what was checked is what is sent, even if the link changes
+        if phone.private(real):
+            return "error: that is one of Auren's own files (its settings, keys or tokens): it isn't sent"
+
+    def send(secret_ok: bool = False) -> str:
+        if not phone.devices():
+            raise ValueError("no phone is paired: the user can pair one with auren phone pair")
+        it = phone.add(kind, title, content, path, secret_ok=secret_ok)
+        return f"sent to the phone's inbox (item {it['id']})"
+
+    if any(safety.mentions_secrets(n) for n in names):       # a link can carry a token too (?token=...)
+        return _gate({safety.SECRETS}, f"Send {title or what[:60]!r} to your phone? It may hold a secret.",
+                     lambda: send(secret_ok=True),
+                     say=lambda result: "Sent it to your phone." if not result.startswith("error:") else None)
+    return _run(send)
+
+
+@tool()
 def set_reminder(minutes: int, text: str) -> str:
     """Desktop reminder after a number of minutes."""
     return _run(desktop.reminder, minutes, text)

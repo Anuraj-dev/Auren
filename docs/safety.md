@@ -127,8 +127,21 @@ When a coding agent in herdr stops at an approval or question, Auren reports wha
 
 The system profile masks secrets (see [system-profile.md](system-profile.md)). The brain's rules forbid reading secrets aloud, and commands that touch secret files are in the floor: they ask at every level.
 
+## The phone
+
+The phone remote ([phone.md](phone.md)) adds no new way in: a phone request runs at the desk's level and
+asks the same questions, which can be answered from the phone or the desk. Only paired phones get in: a
+one-time code (5 minutes, 5 tries) is traded for a random device token, and the PC keeps only its SHA-256
+hash. `auren phone revoke` cuts a phone off at once. The server listens on the Tailscale address and the
+PC's private LAN addresses (never `0.0.0.0` or a public address; `phone.lan = false` keeps it off the
+LAN), over TLS the app pins to the PC's own certificate, so nobody else on the Wi-Fi can read or fake it.
+Pairing is refused unless `auren phone pair` is open, is rate limited, and refused tries are logged. A
+Yes/No from the phone names the question it was shown; a stale one approves nothing. Anyone holding the phone unlocked, with the
+app paired, can ask Auren for anything you could at the desk: treat it like the laptop's keyboard. Sending
+a file or text that looks like a secret to the phone asks first.
+
 ## Stopping
 
-- **Stop** (Super+A or clicking the mascot while Auren thinks or works, `auren-ctl cancel`, the panel's Stop) stops the brain. Claude Code is sent its own interrupt, so the conversation is kept: "no, do this instead" still has the context. If it hasn't stopped within 5 s (`INTERRUPT_GRACE`), its process is killed and the next request starts a fresh conversation. A Codex run is killed (its finished exchanges are kept). The runtime refuses any further tool calls until the next message. A tool already running finishes.
+- **Stop** (Super+A or clicking the mascot while Auren thinks or works, `auren-ctl cancel`, the panel's Stop, the phone's Stop) stops the brain, whichever side started the turn. Claude Code is sent its own interrupt, so the conversation is kept: "no, do this instead" still has the context. If it hasn't stopped within 5 s (`INTERRUPT_GRACE`), its process is killed and the next request starts a fresh conversation. A Codex run is killed (its finished exchanges are kept). The runtime refuses any further tool calls until the next message. A tool already running finishes.
 - **Backup brain after a limit:** if Claude hits its usage limit after something that shouldn't be repeated has run (anything but reading, looking, focusing and opening), Auren doesn't hand the request to Codex, which would start it over; it says it stopped partway.
 - A spoken "stop" that interrupts a running action.

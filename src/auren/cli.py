@@ -4,7 +4,8 @@
   auren setup                 # set Auren up for you: talk keys, bar plugin, API key, voice, services
   auren doctor                # what works on this machine, and how to fix what doesn't
   auren config                # settings (~/.config/auren/config.toml): show, get, set, edit
-  auren voice-model           # download the voice model (auren setup runs this)
+  auren voice-model           # download the voice model and its four voices (auren setup runs this)
+  auren phone pair            # pair the phone app (also: auren phone devices, auren phone revoke <id>)
   auren update                # check for a newer version, and install it if you say so
   auren browser               # the browser tools: status, setup, which browser to use
   auren chat                  # type requests, see tool calls and the reply
@@ -70,6 +71,16 @@ def _permissions() -> int:
         return 1
     print("Turn Auren on in each Settings page that opened, then run `auren service restart`.")
     return 0
+
+
+def _voice_load() -> None:
+    """A running daemon that has no voice yet speaks with it now, without a restart."""
+    from .ctl import send
+    try:
+        if send("voice-load", timeout=5) == "loading the voice":
+            print("Auren speaks with it in a moment.")
+    except OSError:                 # not running (it loads the voice when it starts), or it didn't answer
+        pass
 
 
 def _app(args: list[str]) -> int:
@@ -161,6 +172,7 @@ def main() -> None:
     sub.add_parser("vocab").add_argument("args", nargs=argparse.REMAINDER)
     sub.add_parser("update").add_argument("args", nargs=argparse.REMAINDER)
     sub.add_parser("browser", add_help=False).add_argument("args", nargs=argparse.REMAINDER)
+    sub.add_parser("phone", add_help=False).add_argument("args", nargs=argparse.REMAINDER)
     sub.add_parser("mascot")
     sub.add_parser("open")
     sub.add_parser("app").add_argument("args", nargs=argparse.REMAINDER)
@@ -210,6 +222,9 @@ def main() -> None:
     if a.cmd == "browser":
         from .browser_cli import main as browser_main
         return browser_main(a.args)
+    if a.cmd == "phone":
+        from .phone import main as phone_main
+        return phone_main(a.args)
     if a.cmd == "update":
         from .update import main as update_main
         return update_main(a.args)
@@ -220,6 +235,7 @@ def main() -> None:
         except VoiceModelMissing as e:
             print(f"{RED}{e}{END}")
             return 1
+        _voice_load()
         return 0
     # This process runs its own tool runtime and session: confirmations and turns are its own.
     from .config import RUNTIME_DIR

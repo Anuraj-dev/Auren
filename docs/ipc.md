@@ -18,6 +18,7 @@ for 3 days), unless `XDG_RUNTIME_DIR` is set, and `brain/` is `$TMPDIR/auren-bra
 | `state.json` | daemon | Current state, below (written whole, then renamed) |
 | `level` | daemon | Loudness 0..1 of the mic or the voice, ~20 times a second |
 | `tools.sock` | daemon | The tool runtime, for the brains' MCP adapter: one JSON line in (`session`, `tool`, `args`), one out (`content`). `auren chat` serves its own `tools-<pid>.sock` |
+| `phone.json` | daemon | The phone server: `on`, `port`, `addrs` (each `ip`, `via`, `ok`, `why`), `fp`, `why` ([phone.md](phone.md)) |
 | `mascot.pid` | mascot (macOS) | The mascot host's pid, so screen tools leave its windows out |
 | `setup.request` | `auren open` (macOS) | Opening Auren.app asks the mascot's process to show the setup window; it removes the file, and ignores one over a minute old |
 | `daemon.lock` | daemon | Held (flock) while a daemon runs, so a second one exits; holds its pid |
@@ -39,11 +40,12 @@ Always present:
 | `codexModel` | Codex's model (`brain.codex_model`), for the panel's labels |
 | `codexEffort` | Codex's effort (`brain.codex_effort`) |
 | `voice` | Spoken replies on |
-| `voiceName` | Supertonic voice (`F2`, `M3`, …) |
+| `voiceName` | The Phonon voice: `Everly` (the default), `Juniper`, `Hugh` or `Trevor`. Set by `voice-name`, the panel or a phone's `voice.set` ([phone.md](phone.md#protocol-api-v1)); the phone gets it in its `state` too |
 | `voices` | Voices available |
-| `tts` | `{speed, steps, volume, pause}` |
+| `tts` | `{speed, volume, pause}` |
 | `safety` | Approval level: `ask`, `task`, `free` or `never` ([safety.md](safety.md#approval-levels)) |
 | `autosend`, `autosendAfter` | Auto-send on, and its delay in seconds ([daemon.md](daemon.md)) |
+| `origin` | Who owns the turn now: `desk`, `phone`, or `null` when nobody does ([phone.md](phone.md#how-a-phone-turn-works)) |
 
 Sometimes present:
 
@@ -59,7 +61,9 @@ Sometimes present:
 ## Socket commands
 
 Sent with `auren-ctl <command>` (`~/.local/share/auren/bin/auren-ctl`, also linked into `~/.local/bin`);
-the reply is one line. It exits 1 when the daemon isn't running.
+the reply is one line. It exits 1 when the daemon isn't running. While the phone owns the turn, `talk`,
+`start`, `stop`, `ask` and `yes`/`no` are refused ("Auren is busy with your phone"), except that `talk`
+while Auren thinks or works stops the answer as always; `cancel` stops it at any time.
 
 | Command | Does |
 |---|---|
@@ -70,8 +74,9 @@ the reply is one line. It exits 1 when the daemon isn't running.
 | `say <text>` | Speak a sentence |
 | `forget` | Fresh conversation |
 | `voice on\|off\|toggle` | Spoken replies |
-| `voice-name <name> [sample]` | Voice (says the sample) |
-| `tts speed X steps N volume X pause X` / `tts reset` | Voice tuning |
+| `voice-name <name> [sample]` | Voice: `Everly`, `Juniper`, `Hugh` or `Trevor`, any case (says the sample when idle). The same setting as a phone's `voice.set` |
+| `tts speed X volume X pause X` / `tts reset` | Voice tuning |
+| `voice-load` | Speak now if the voice wasn't there at start (it keeps retrying the download until then): `auren voice-model` sends it after a download |
 | `brain auto\|claude\|codex` | Brain mode |
 | `effort low\|medium\|high\|xhigh\|max` | Claude's effort (fresh conversation) |
 | `codex-effort minimal\|low\|medium\|high\|xhigh` | Codex's effort (from its next answer) |
@@ -87,7 +92,7 @@ the reply is one line. It exits 1 when the daemon isn't running.
 
 | Path | Writer | Content |
 |---|---|---|
-| `~/.config/auren/config.toml` | user, `auren config`, daemon | Settings: `[voice]` (on, name, tuning), `[listen]` (auto-send), `[brain]` (mode, effort), `[safety]` (level). The daemon rewrites only the values it changes, keeping comments. Replaces `settings.json`, which is moved in once and kept as `settings.json.bak` |
+| `~/.config/auren/config.toml` | user, `auren config`, daemon | Settings: `[voice]` (on, name, tuning), `[listen]` (auto-send), `[brain]` (mode, effort), `[safety]` (level), `[phone]` (enabled, port, lan). The daemon rewrites only the values it changes, keeping comments. Replaces `settings.json`, which is moved in once and kept as `settings.json.bak` |
 | `~/.config/auren/mascot.json` | bar plugin (read by the mascot) | Mascot preferences |
 | `~/.config/auren/secrets.env` | user | API keys (mode 600) |
 | `~/.config/auren/routines/*.md` | user | Saved workflows for the brain |
@@ -96,10 +101,11 @@ the reply is one line. It exits 1 when the daemon isn't running.
 | `~/.local/state/auren/mascot.json` | mascot | Its place and size |
 | `~/.local/state/auren/history.jsonl` | daemon | Every exchange (read by the bar plugin) |
 | `~/.local/state/auren/daemon.log` | daemon | Log |
+| `~/.local/state/auren/phone/` | daemon, `auren phone` | Paired phones (token hashes), the open pairing, the phone's inbox ([phone.md](phone.md#files)) |
 | `~/.local/state/auren/herdr-jobs.json` | tools | herdr tabs Auren created |
 | `~/.local/state/auren/jobs/*.log` | tools | Output of commands run without herdr |
 | `~/.cache/auren/profile-static.json` | profile | Cached machine facts |
-| `~/.local/share/auren/models/supertonic-3/` | `auren voice-model` | The voice model |
+| `~/.cache/huggingface/hub/` (`models--gradium--phonon-*`) | `auren voice-model` | The voice model (Phonon 31m) and its voices, at the revisions `ptts` pins |
 | `~/.local/share/auren/{venv,mascot,bar-plugin,bin}/` | `install.sh` | The installed program (for the package, `auren setup` links `bin/`, `mascot/` and `bar-plugin/` to `/usr`) |
 | `~/.local/share/auren/install.json` | `install.sh`, `auren setup` | What's installed: version, commit, branch, tag (if HEAD has an exact tag), remote, source, mode (`install`, `dev`, or `package`), dirty, committed, installed_at |
 | `~/.local/share/auren/setup.json` | `auren setup` | That setup finished: mode (`install` or `package`), version, at |
@@ -109,6 +115,13 @@ the reply is one line. It exits 1 when the daemon isn't running.
 | `$XDG_RUNTIME_DIR/auren/update.json` | `auren update` | The last check or update: `state` (current, available, updating, done, failed, error, unknown), `channel` (`releases`), `installed`, `step`, `message`, `latest` (commit, short, date, subject, release tag, name, url), `commits`, `count`, `checked_at`, `started_at`, `finished_at`, `note`, `log` (read by the bar plugin) |
 | `~/.local/state/auren/update.log` | `auren update` | The last update's steps and install output |
 | `~/.config/auren/panel.json` | bar plugin | The panel's own settings (`notifyUpdates`) |
+
+## Phone remote
+
+The phone talks to the daemon over HTTPS and a secure WebSocket on the Tailscale address or a private
+LAN address, pinned to the PC's self-signed certificate, with a device token; the protocol is in
+[phone.md](phone.md#protocol-api-v1). A phone sets the PC's voice with `{"type":"voice.set","id":…,"name":"Hugh"}`
+(ack `ok` or `error: …`), the same setting as `voice-name`, and reads it back as `voiceName` in the state.
 
 ## English-only replies
 

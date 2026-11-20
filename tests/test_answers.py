@@ -29,7 +29,7 @@ class _Harness(daemon.Daemon):
     """The daemon without a voice, ears or real brain: what it says, shows and records is kept."""
 
     def __init__(self, tmp_path: Path):
-        self.settings = {"voice": True, "brain": "auto", "voiceName": "F2", "safety": "ask"}
+        self.settings = {"voice": True, "brain": "auto", "voiceName": "Everly", "safety": "ask"}
         self.tools = Runtime(tmp_path / "tools.sock")
         self.brain = _Brain()
         self.voice = self.profile = self.listening = None
@@ -175,6 +175,17 @@ def test_a_yes_to_something_else_is_not_an_answer(tmp_path):
     assert d.ran == [] and d.brain.asked == ["yes"]   # the brain, who knows the context, decides
 
 
+def test_something_shared_from_the_phone_never_answers_a_question(tmp_path):
+    """A "yes" in a shared message (from another app) isn't the user's yes, nor a "start fresh" their own."""
+    async def scenario(d):
+        d.ask("Delete the report?", {"file"})
+        await d.respond("yes", source="phone-share")
+        await d.respond("start fresh", source="phone-share")
+
+    d = _run(tmp_path, scenario)
+    assert d.ran == [] and d.brain.asked == ["yes", "start fresh"] and d.brain.forgot == 0
+
+
 def test_more_than_a_plain_yes_goes_to_the_brain(tmp_path):
     async def scenario(d):
         d.ask("Close Calc?", {"window"})
@@ -292,3 +303,18 @@ def test_the_replay_guard_survives_the_brain_going_on_after_a_yes(tmp_path):
 
     d = _run(tmp_path, scenario, level="task")
     assert d.acted                                       # a backup brain must not start this request over
+
+
+def test_fresh_while_someone_talks_keeps_the_listen_going(tmp_path):
+    """Fresh from the panel or the phone, or a new Claude effort, during a listen: the brain restarts under it,
+    and the state stays "listening" (the phone took "thinking" then "idle" for the end of its listen)."""
+    async def scenario(d):
+        d.listening = object()                           # a listen is open
+        d.set_state("listening", "")
+        await d.forget(say=False)
+        d.during = d.state
+        d.listening = None
+        await d.forget(say=False)
+
+    d = _run(tmp_path, scenario)
+    assert d.during == "listening" and d.brain.forgot == 2 and d.state == "idle"

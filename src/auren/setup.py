@@ -576,8 +576,9 @@ def _unit_quote(text: str) -> str:
 
 
 def xdg_drop_ins() -> None:
-    """Custom XDG folders reach the package's services through a drop-in (install.sh writes them into its
-    own units instead): the user manager may not have them. A custom XDG_DATA_HOME also moves where the
+    """Custom XDG folders and a Hugging Face cache set in the shell (HF_HOME, HF_HUB_CACHE: where the voice
+    was downloaded) reach the package's services through a drop-in (install.sh writes them into its own
+    units instead): the user manager may not have them. A custom XDG_DATA_HOME also moves where the
     mascot starts from, since the bar plugin calls it by that path (qs matches the path as given)."""
     env, data = [], None
     home = Path.home()
@@ -588,13 +589,17 @@ def xdg_drop_ins() -> None:
             env.append(f"Environment={_unit_quote(f'{var}={value}')}")
             if var == "XDG_DATA_HOME":
                 data = value
+    for var in ("HF_HOME", "HF_HUB_CACHE"):        # else the daemon downloads the voice again, elsewhere
+        value = os.environ.get(var, "")
+        if value.startswith("/"):
+            env.append(f"Environment={_unit_quote(f'{var}={value}')}")
     for unit in UNITS:
         path = user_units() / f"{unit}.service.d" / DROP_IN
         lines = list(env)
         if unit == "auren-mascot" and data:
             lines += ["ExecStart=", "ExecStart=" + MASCOT_START.format(_unit_quote(data + "/auren/mascot"))]
         if lines:
-            _write_atomic(path, "# Written by auren setup: your custom XDG folders\n[Service]\n" + "\n".join(lines) + "\n")
+            _write_atomic(path, "# Written by auren setup: your custom XDG and Hugging Face folders\n[Service]\n" + "\n".join(lines) + "\n")
         elif path.exists():
             path.unlink()
             with_parent = path.parent
@@ -624,14 +629,16 @@ def secrets(key: str) -> bool:
 
 
 def voice_model(ui: Ui) -> None:
-    from .voice import model_dir
-    if os.environ.get("AUREN_SKIP_VOICE_MODEL"):     # CI: not 380 MB per run
+    from .voice import missing, retire_old_model
+    if os.environ.get("AUREN_SKIP_VOICE_MODEL"):     # CI: not 100 MB per run
         ui.warn("voice model skipped (AUREN_SKIP_VOICE_MODEL): auren voice-model downloads it")
         return
-    if model_dir():
+    if not missing():
         ui.ok("Voice model: already downloaded")
+        if retire_old_model(lambda line: None):
+            ui.ok("Old voice model (Supertonic, about 380 MB) deleted")
         return
-    code = ui.spin("Downloading the voice model (about 380 MB)…", [sys.executable, "-P", "-m", "auren.cli", "voice-model"])
+    code = ui.spin("Downloading the voice model (about 100 MB)…", [sys.executable, "-P", "-m", "auren.cli", "voice-model"])
     if code == 0:
         ui.ok("Voice model downloaded")
     else:
@@ -877,15 +884,16 @@ def remove(a: argparse.Namespace) -> int:
         if link.is_symlink() and (not link.exists() or Path(os.readlink(link)).is_relative_to(data)):
             link.unlink()
     _remove(config.CACHE_DIR / "source")
+    from .voice import cache_dirs
     if purge:
-        for d in (config.CONFIG_DIR, config.STATE_DIR, config.CACHE_DIR, data):
+        for d in (config.CONFIG_DIR, config.STATE_DIR, config.CACHE_DIR, data, *cache_dirs()):
             _remove(d)
         if shutil.which("secret-tool"):         # where config.secret also looks for the key
             _run(["secret-tool", "clear", "auren", "assemblyai_api_key"])
         ui.ok("Settings, API key, history, logs and voice model deleted")
     else:
         ui.note(f"Kept: settings and API key ({config.CONFIG_DIR}), history ({config.STATE_DIR}), "
-                f"voice model ({config.MODELS_DIR}). --purge deletes them.")
+                f"voice model ({cache_dirs()[0].parent}). --purge deletes them.")
     if config.PACKAGED:
         ui.step(f"Now remove the package: sudo pacman -R {config.PACKAGE_NAME}")
     return 0

@@ -7,8 +7,10 @@ are often only in the first).
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -156,6 +158,7 @@ def checks() -> list[Check]:
     out.append(Check(g, "microphone", OK, name or "default source") if code == 0 else
                Check(g, "microphone", FAIL, "no default microphone", "pick one in Omarchy's audio settings"))
     out += _shared(svc)
+    out += phone_checks()
 
     # --- install ----------------------------------------------------------------------------------
     g = "Install"
@@ -207,10 +210,12 @@ def _shared(svc: str | None, mac: bool = False) -> list[Check]:
                Check(g, "speech-to-text key", FAIL, "no AssemblyAI key",
                      f"add ASSEMBLYAI_API_KEY=… to {CONFIG_DIR / 'secrets.env'}"))
     try:
-        from .voice import model_dir
-        folder = model_dir()
-        out.append(Check(g, "voice model", OK, str(folder)) if folder else
-                   Check(g, "voice model", WARN, "not downloaded: replies will be text only", "auren voice-model"))
+        from .voice import VOICES, missing
+        lost = missing()
+        out.append(Check(g, "voice model", OK, f"Phonon 31m, {', '.join(VOICES)}") if not lost else
+                   Check(g, "voice model", WARN, "not downloaded: replies will be text only", "auren voice-model")
+                   if "model" in lost else
+                   Check(g, "voice model", WARN, f"voices not downloaded yet: {', '.join(lost)}", "auren voice-model"))
     except ImportError as e:
         out.append(Check(g, "voice model", WARN, f"voice library missing ({e})", config.REINSTALL))
 
@@ -233,13 +238,15 @@ def _shared(svc: str | None, mac: bool = False) -> list[Check]:
              "screen": ("auren permissions, then turn Auren on under Privacy & Security → Accessibility" if mac
                         else "add a udev rule giving your user access to /dev/uinput (see README)")}
     for name, i in integrations.INTEGRATIONS.items():
+        if name == "phone":
+            continue                     # its own group (Omarchy only, for now)
         if mac and name == "screen":        # its Accessibility check runs here, in the terminal: the Permissions
             continue                        # section has the daemon's own
         st, why = integrations.state(name)
         if st == "off":
             out.append(Check(g, i.what, OK, "turned off"))
         elif st == "missing":
-            wanted = integrations.settings()[f"integrations.{name}"] is True
+            wanted = integrations.settings()[i.setting] is True
             left = ("its tools offer to set it up" if i.offer_unset and integrations._can_set_up(name)
                     else "its tools are left out")
             out.append(Check(g, i.what, FAIL if wanted else WARN, f"{why}: {left}", fixes[name]))
@@ -267,6 +274,118 @@ def _shared(svc: str | None, mac: bool = False) -> list[Check]:
                      "" if folders else 'auren config set projects.folders "~/where/they/are"'))
 
     return out
+
+
+def phone_checks() -> list[Check]:
+    """The phone remote: off by config, its two paths (Tailscale, the same Wi-Fi/LAN), each address the server
+    listens on, and the phones. One missing path is a warning, not a failure: the other still works."""
+    from . import phone
+    from .settings import current as settings
+    g = "Phone"
+    conf = settings()
+    if conf["phone.enabled"] is False:
+        return [Check(g, "phone remote", OK, "turned off")]
+    wanted = conf["phone.enabled"] is True
+    lan = conf.get("phone.lan", True) is not False
+    out = []
+    addrs, missing = phone.addresses(lan)
+    ts = next((ip for ip, via in addrs if via == "tailscale"), None)
+    why_ts = missing.get("tailscale", "")
+    out.append(Check(g, "Tailscale", OK, ts) if ts else Check(
+        g, "Tailscale", WARN, f"{why_ts}: the phone works only on the same Wi-Fi"
+        + ("" if "installed" in why_ts or phone.known_tailscale() else " for now (phones learn the Tailscale address"
+           " the next time they connect after it's on)"),
+        "install Tailscale (omarchy install tailscale) and run: tailscale up" if "installed" in why_ts else "tailscale up"))
+    lan_ips = [ip for ip, via in addrs if via == "lan"]
+    if not lan:
+        out.append(Check(g, "Wi-Fi/LAN", OK, "off (phone.lan = false): Tailscale only"))
+    else:
+        out.append(Check(g, "Wi-Fi/LAN", OK, ", ".join(lan_ips)) if lan_ips else Check(
+            g, "Wi-Fi/LAN", WARN, f"{missing.get('lan', 'none')}: the phone works only over Tailscale", ""))
+    if not addrs:
+        out.append(Check(g, "phone server", FAIL if wanted else WARN, "nowhere to listen: no Tailscale and no Wi-Fi/LAN",
+                         "tailscale up, or join a Wi-Fi network"))
+    st = phone.status()
+    daemon_up = _run(["systemctl", "--user", "is-active", "auren"])[1] == "active" or st.get("pid")
+    if st.get("on"):
+        for a in st.get("addrs") or []:
+            path = "Tailscale" if a.get("via") == "tailscale" else "Wi-Fi/LAN"
+            out.append(Check(g, f"listening on {a['ip']}", OK, f"port {st['port']}, HTTPS ({path})")
+                       if a.get("ok") else Check(g, f"listening on {a['ip']}", WARN, a.get("why", ""), "set phone.port"))
+        if st.get("fp"):
+            out.append(Check(g, "certificate", OK, f"self-signed, pinned by the app (SHA-256 {st['fp'][:16]}…)"))
+    elif st.get("idle") and not phone.devices():
+        out.append(Check(g, "phone server", OK, "not listening until a phone is paired (auren phone pair starts it)"))
+    elif addrs:
+        out.append(Check(g, "phone server", WARN, st.get("why") or "the Auren daemon isn't running",
+                         "systemctl --user restart auren" if daemon_up else "systemctl --user start auren"))
+    if addrs and (fw := firewall_check(int(conf.get("phone.port") or 8735), lan_ips, bool(ts))):
+        out.append(fw)
+    paired = phone.devices()
+    out.append(Check(g, "paired phones", OK if paired else WARN,
+                     ", ".join(f"{d['name']} ({d['id']})" for d in paired) or "none: send_to_phone is left out",
+                     "" if paired else "auren phone pair"))
+    return out
+
+
+UFW_RULES = Path("/etc/ufw/user.rules")
+
+
+def firewall_check(port: int, lan_ips: list[str], tailscale: bool) -> Check | None:
+    """Omarchy turns ufw on, and ufw drops incoming connections, so a phone can't reach the server until the port
+    is allowed. ufw's own rule file is world-readable, so this needs no root. None when ufw isn't running."""
+    if _run(["systemctl", "is-active", "ufw"])[1] != "active":
+        return None
+    try:
+        rules = UFW_RULES.read_text()
+    except OSError:
+        return None
+    # Each path separately: a rule only for tailscale0 doesn't open the LAN, nor one for another subnet.
+    # Tailscale's own firewall rules (on unless tailscale up --netfilter-mode=off/nodivert) let everything on
+    # tailscale0 in, before ufw sees it.
+    lan_ok, ts_ok = not lan_ips, not tailscale or _tailscale_lets_in()
+    for line in rules.splitlines():
+        if not line.startswith("-A ufw-user-input") or not re.search(r"-j ACCEPT\b", line):
+            continue
+        # This port, or every port (ufw allow from 192.168.1.0/24); TCP or any protocol; not narrowed to one
+        # destination address or to a source port.
+        dport = re.search(r"--dports? (\S+)", line)
+        if dport and str(port) not in re.split(r"[,:]", dport[1]):
+            continue
+        proto = re.search(r"-p (\S+)", line)
+        if proto and proto[1] not in ("tcp", "all") or re.search(r"-d \S|--sports? ", line):
+            continue
+        dev = re.search(r"-i (\S+)", line)
+        src = re.search(r"-s (\S+)", line)
+        try:
+            net = ipaddress.ip_network(src[1], strict=False) if src else None
+        except ValueError:
+            continue
+        if dev and dev[1] == "tailscale0":
+            ts_ok = True
+        elif not dev:
+            ts_ok = ts_ok or net is None
+            lan_ok = lan_ok or net is None or any(ipaddress.ip_address(ip) in net for ip in lan_ips)
+    if lan_ok and ts_ok:
+        return Check("Phone", "firewall", OK, f"ufw allows port {port}")
+    fix = []
+    if lan_ips and not lan_ok:
+        nets = sorted({str(ipaddress.ip_network(f"{ip}/16", strict=False)) for ip in lan_ips})
+        fix += [f"sudo ufw allow from {n} to any port {port} proto tcp comment 'auren phone'" for n in nets]
+    if tailscale and not ts_ok:
+        fix.append(f"sudo ufw allow in on tailscale0 to any port {port} proto tcp comment 'auren phone'")
+    blocked = "Wi-Fi/LAN" if ts_ok else "Tailscale" if lan_ok else ""
+    why = f"ufw blocks port {port} over {blocked}" if blocked else f"ufw blocks port {port}"
+    return Check("Phone", "firewall", WARN, f"{why}: the phone can't reach this PC that way", "; ".join(fix))
+
+
+def _tailscale_lets_in() -> bool:
+    """Does Tailscale's own firewall rule (ts-input: accept all on tailscale0) run ahead of ufw's?"""
+    code, out = _run(["tailscale", "debug", "prefs"])
+    try:
+        return code == 0 and json.loads(out).get("NetfilterMode") == 2      # 2: on (1: nodivert, 0: off)
+    except (ValueError, AttributeError):
+        return False
 
 
 SYMBOL = {OK: "\033[32m✓\033[0m", WARN: "\033[33m!\033[0m", FAIL: "\033[31m✗\033[0m"}

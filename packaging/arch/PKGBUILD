@@ -4,7 +4,7 @@
 # https://github.com/kvm404/Auren; the release workflow sets pkgver and the checksum and pushes it to
 # the AUR. build-local.sh builds it from a checkout instead.
 #
-# Auren's Python dependencies aren't all in Arch (supertonic isn't packaged, python-mcp is too old), so
+# Auren's Python dependencies aren't all in Arch (ptts isn't packaged, python-mcp is too old), so
 # the package carries its own environment in /usr/lib/auren, built with uv from uv.lock against the
 # system Python. When Arch moves to a new Python, rebuild it: yay -S --rebuild auren.
 
@@ -40,7 +40,7 @@ build() {
 
 check() {
   cd "$_src"
-  "$srcdir/venv/bin/python" -I -c 'import auren.cli, auren.daemon, auren.setup, supertonic, mcp'
+  "$srcdir/venv/bin/python" -I -c 'import auren.cli, auren.daemon, auren.setup, auren.phone_server, ptts, mcp'
 }
 
 package() {
