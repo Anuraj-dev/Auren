@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- **Install on a Mac with Homebrew**: `brew install kvm404/auren/auren`, then `auren setup`. Until it's
+  set up, `auren` says to run `auren setup`. `auren update` updates it with `brew upgrade auren`, in the
+  background, and sets the new version up; if that fails, it goes back to the version that was there.
+  After a `brew upgrade` on its own, `auren` reminds you to run `auren setup`. Each release is published
+  to the tap `kvm404/homebrew-auren` by a new `brew` workflow. Installing from a clone with
+  `./install-macos.sh` still works. See [docs/macos.md](docs/macos.md).
+
 ### Changed
 
 - The browser tools click and type with real input in the page, not script events, so `browser_type`

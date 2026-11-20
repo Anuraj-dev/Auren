@@ -26,6 +26,18 @@ idle, stops it, runs `yay -S --needed auren` (or `paru`), which asks for your pa
 again as it was. A changed bar plugin or mascot restarts the Omarchy shell. Updating the whole system
 with `yay -Syu` updates Auren too; restart it afterwards (pacman's message says how).
 
+### Homebrew (macOS)
+
+`brew install kvm404/auren/auren` installs Auren's source, and `auren setup` builds the install from it
+(install-macos.sh --brew, recorded as mode `brew` in `~/.local/share/auren/install.json`). `auren update
+check` compares the installed version with the latest release, like the Arch package, and also offers a
+newer version Homebrew has already (after a `brew upgrade` that wasn't followed by `auren setup`).
+Updating runs in the background: it waits until Auren is idle, stops its launch agents, runs `brew
+update` and `brew upgrade auren`, runs the new version's installer, and starts Auren again as it was. The
+upgrade keeps the old version's folder (`HOMEBREW_NO_INSTALL_CLEANUP`), so a failed install sets the old
+version up again from it. A release the tap doesn't have yet changes nothing. A Homebrew install never
+uses the git clone below, and a clone's install never runs brew.
+
 ### install.sh installs
 
 A normal install updates from its own clone in `~/.cache/auren/source/`. The checkout you originally
@@ -53,9 +65,9 @@ Releases are published after the release-preparation PR is reviewed, merged, and
 merged commit. The first release is **v0.1.0**, an early release for Omarchy users and contributors.
 It is a regular GitHub release so the release-only updater can discover it.
 
-1. Update the version in `pyproject.toml`, `omarchy-plugin/manifest.json` and `pkgver` in
-   `packaging/arch/PKGBUILD` (reset `pkgrel` to 1), refresh `uv.lock` if needed, and add release
-   notes under that version in `CHANGELOG.md`.
+1. Update the version in `pyproject.toml`, `omarchy-plugin/manifest.json`, `pkgver` in
+   `packaging/arch/PKGBUILD` (reset `pkgrel` to 1) and the `url` in `packaging/homebrew/auren.rb`,
+   refresh `uv.lock` if needed, and add release notes under that version in `CHANGELOG.md`.
 2. Update user docs and `docs/ipc.md` for changed behavior. Run the contributor checks, including Qt
    tests, and smoke-test an install on an Omarchy session: build the package from the release commit
    with `packaging/arch/build-local.sh`, install it, and run `auren setup`. Keep live test results separate from
@@ -75,8 +87,14 @@ It is a regular GitHub release so the release-only updater can discover it.
    checksum of GitHub's source tarball for the tag, writes `.SRCINFO`, and pushes both to
    `aur.archlinux.org/auren.git`. Check that it passed and that `yay -Si auren` shows the new
    version. If it failed, fix the cause and run it again from Actions (`aur`, with the tag).
-6. Run `auren update check` from an existing install and verify the tag. Check that a clean
-   `yay -S auren` works. Confirm later pushes to `main` leave the installed release current.
+6. The `brew` workflow publishes the release to the Homebrew tap: it sets the formula's `url` to the
+   tag's source tarball and its `sha256` to the tarball's checksum, and pushes it to
+   `kvm404/homebrew-auren` as `Formula/auren.rb`. Check that it passed and that `brew info
+   kvm404/auren/auren` (after `brew update`) shows the new version. If it failed, fix the cause and run
+   it again from Actions (`brew`, with the tag).
+7. Run `auren update check` from an existing install and verify the tag. Check that a clean
+   `yay -S auren` works, and on a Mac `brew install kvm404/auren/auren` then `auren setup`. Confirm later
+   pushes to `main` leave the installed release current.
 
 Publishing a release does not change the repository's visibility.
 
@@ -95,6 +113,25 @@ packages, the `AUR_SSH_KEY` secret can push to them too. Moving the package to a
 fixes that: add the new account as a co-maintainer on the package's AUR page (or have the old one
 disown it to the new one), put a new key on the new account, replace the secret, and take the old
 key off the old account.
+
+### The Homebrew tap, once
+
+`brew install kvm404/auren/auren` reads the formula from the tap repository `kvm404/homebrew-auren`
+(Homebrew adds the `homebrew-` itself). To set it up:
+
+1. Create the public repository `kvm404/homebrew-auren` with a README (so it has a `main` branch), for
+   example: "Homebrew tap for Auren: `brew install kvm404/auren/auren`, then `auren setup`. The formula
+   is published from packaging/homebrew/ in kvm404/Auren on each release: don't edit it here."
+2. Make a fine-grained personal access token (GitHub → Settings → Developer settings → Fine-grained
+   tokens) with access to that repository only, and the repository permission **Contents: Read and
+   write** (Metadata read-only comes with it). Give it an expiry date and note it down to renew.
+3. Add it to kvm404/Auren's Actions secrets as `HOMEBREW_TAP_TOKEN`
+   (`gh secret set HOMEBREW_TAP_TOKEN --repo kvm404/Auren`).
+4. Run the `brew` workflow from Actions for the latest tag, then check `brew install
+   kvm404/auren/auren` on a Mac.
+
+The formula in this repository has a placeholder `sha256` (all zeros); only the tap's copy carries the
+checksum, filled in by the workflow from the published tarball.
 
 ### The phone app, once
 
