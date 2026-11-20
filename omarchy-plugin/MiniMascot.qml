@@ -3,17 +3,23 @@ import QtQuick
 // The mascot at bar size, in pixels (one unit = 1 px on a 16 px canvas): Auren or Veyra.
 // Bar colour when idle, the mascot's own colour while auren works, red on errors, dim with shut eyes
 // when off. Bobs while active, quicker while listening.
+// Blindfold mode (docs/blindfold.md): dim and still while a request runs, then green (done) or red (failed).
 Item {
   id: m
 
   property string kind: "auren"       // auren, veyra
   property string mood: "idle"        // off, idle, listening, thinking, working, speaking, error, awaiting
   property color foreground: "white"
-  readonly property bool active: mood !== "idle" && mood !== "off"
+  property string blindfold: ""       // Blindfold mode: "running", "ok", "failed", or "" (off, or no result yet)
+  readonly property bool active: mood !== "idle" && mood !== "off" && blindfold === ""
   readonly property bool lit: active || mood === "awaiting"
   readonly property bool off: mood === "off"
   readonly property color brand: kind === "veyra" ? "#A08BF7" : "#6F92D8"
-  readonly property color skin: off ? Qt.darker(foreground, 1.9) : mood === "error" ? "#e05d5d" : lit ? brand : foreground
+  readonly property color green: "#5fbf6f"
+  readonly property color red: "#e05d5d"
+  readonly property color skin: off ? Qt.darker(foreground, 1.9) : blindfold === "running" ? Qt.darker(foreground, 1.7)
+                              : blindfold === "ok" ? green : blindfold === "failed" ? red
+                              : mood === "error" ? red : lit ? brand : foreground
   readonly property real u: Math.max(1, Math.floor(width / 16))
 
   // [x, y, w, h, role]. Roles: s skin, e eye, v visor, l LED (Auren's eyes), g gold (antenna), t tail tip, h thruster

@@ -186,7 +186,7 @@ def test_state_goes_back_to_claude_when_codex_handover_ends(tmp_path, monkeypatc
     async def run():
         d = daemon.Daemon.__new__(daemon.Daemon)
         d.settings, d.voice, d.speak_enabled = {"voice": True, "voiceName": "Everly", **tuning()}, None, False
-        d.tools, d.loop = SimpleNamespace(level="ask"), asyncio.get_running_loop()
+        d.tools, d.loop = SimpleNamespace(chosen="ask", blindfold=False), asyncio.get_running_loop()
         d.brain = Handover()
         d.brain.primary, d.brain.backup = SimpleNamespace(effort="low"), SimpleNamespace(model="m", effort="low")
         d.set_state("idle")
@@ -295,7 +295,8 @@ def test_an_interrupted_reply_goes_back_to_idle():
     from types import SimpleNamespace
 
     states = []
-    d = SimpleNamespace(voice_on=True, voice=SimpleNamespace(speak=lambda text: False), state="idle")
+    d = SimpleNamespace(voice_on=True, voice=SimpleNamespace(speak=lambda text: False), state="idle",
+                        tools=SimpleNamespace(blindfold=False))
     d.set_state = lambda state, detail="", **k: setattr(d, "state", state) or states.append((state, detail))
     d.idle = lambda detail="": d.set_state("idle", detail)
     asyncio.run(daemon.Daemon.say(d, "Hello."))

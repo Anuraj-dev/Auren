@@ -5,7 +5,7 @@ from ..config import CONFIG_DIR, MAC, ROUTINES_DIR
 
 INSTRUCTIONS = CONFIG_DIR / "instructions.md"
 
-CORE = """You are Auren, a voice assistant running on the user's laptop (Omarchy, Hyprland). The user speaks; you get a speech-to-text transcript. Your reply is spoken aloud by a text-to-speech voice.
+CORE = """You are Auren, a voice assistant running on the user's laptop (Omarchy, Hyprland). The user speaks; you get a speech-to-text transcript. Your reply is spoken aloud by a text-to-speech voice (unless a <blindfold> note in the message says otherwise: then it overrides these rules).
 
 How to reply:
 - Always reply in English, even if the user speaks or asks for another language.
@@ -110,10 +110,27 @@ APPROVALS = {
 }
 
 
-def user_message(transcript: str, live_context: str, pending: str = "", level: str = "ask") -> str:
+# Blindfold mode: what the talk key without words asks for (a double tap, or silence).
+BLINDFOLD_DEFAULT = "Answer the question on my screen."
+
+# Blindfold mode (docs/blindfold.md). The daemon reads the reply: "ok", or "failed: why"; anything else is a failure.
+BLINDFOLD = """Blindfold mode: nothing you say is spoken or shown, and nobody near the user should notice you. Your final reply is only a status for the bar: exactly "ok" when the job is done and checked, or "failed: <a few words why>".
+- The request is about what is on the screen right now. Start with look_at_screen and work in the focused window.
+- By default the job is to answer the question on the screen: when the transcript is the default request, a few vague words ("do it", "this one", "next"), or misheard noise, find the question in the focused window and answer it. Do something else only when the words clearly ask for it.
+- Never ask the user anything. If the request is unclear, do the most sensible thing the screen and the words point to; if nothing sensible fits, reply failed.
+- Stay where the user is: never launch apps, open URLs or tabs, switch windows or workspaces, or bring anything to the front.
+- When the screen shows a question, work out the answer and enter it in that window: click the field or option, then type_text. Never paste or use the clipboard. Don't submit or send unless the user asked.
+- Type each answer once with type_text: it comes out exactly as you wrote it, even in a code editor (no auto-closed brackets or extra indent). After acting, look_at_screen again to check it's in the right place. If one part is wrong, fix only that part: click just after it (or move there with the arrow keys), BackSpace over the wrong characters and type_text the right ones. Never select everything and retype it all.
+- For research or long work you may use a herdr agent in the background (never show its tab), then type the result yourself."""
+
+
+def user_message(transcript: str, live_context: str, pending: str = "", level: str = "ask",
+                 blindfold: bool = False) -> str:
     """pending: the confirmations still waiting for the user's answer (tools.Runtime.summary).
-    level: the approval level; only the ones that change what you should do are mentioned."""
+    level: the approval level; only the ones that change what you should do are mentioned.
+    blindfold: Blindfold mode is on (its rules override the spoken reply and asking a question)."""
     waiting = (f"\n\n<awaiting_confirmation>\nYou asked the user about these; if this message is their yes, "
                f"call confirm_action with the tokens:\n{pending}\n</awaiting_confirmation>") if pending else ""
     approvals = f"\n\n<approvals>\n{APPROVALS[level]}\n</approvals>" if level in APPROVALS else ""
-    return f"<snapshot>\n{live_context}\n</snapshot>{waiting}{approvals}\n\nTranscript: {transcript}"
+    blind = f"\n\n<blindfold>\n{BLINDFOLD}\n</blindfold>" if blindfold else ""
+    return f"<snapshot>\n{live_context}\n</snapshot>{waiting}{approvals}{blind}\n\nTranscript: {transcript}"

@@ -147,7 +147,8 @@ class Runtime:
         self.socket = socket
         self.profile = Profile()
         self.confirmations = safety.Confirmations()
-        self.level = "ask"                  # the approval level (safety.LEVELS); the daemon keeps it in step with config.toml
+        self.blindfold = False              # Blindfold mode (docs/blindfold.md): never asks, stays in the user's window
+        self.chosen = "ask"                 # the user's approval level (safety.LEVELS); the daemon keeps it in step with config.toml
         self.judge = Judge()
         self._sessions: dict[str, Session] = {}
         self._lock = threading.Lock()
@@ -188,10 +189,27 @@ class Runtime:
         s = self._session(sid)
         s.said, s.typed, s.spoke, s.waiting = [], None, 0, {}
 
+    @property
+    def level(self) -> str:
+        """The approval level that applies now: "never" in Blindfold mode, else the user's own (`chosen`,
+        which Blindfold leaves as it is, so it's back when Blindfold is off)."""
+        return "never" if self.blindfold else self.chosen
+
+    @level.setter
+    def level(self, level: str) -> None:
+        self.chosen = level
+
     def set_level(self, level: str) -> None:
         if level not in safety.LEVELS:
             raise ValueError("safety level must be one of " + ", ".join(safety.LEVELS))
-        self.level = level
+        self.chosen = level
+        self._revoke_all()
+
+    def set_blindfold(self, on: bool) -> None:
+        self.blindfold = bool(on)
+        self._revoke_all()
+
+    def _revoke_all(self) -> None:
         for sid in list(self._sessions):
             self.confirmations.revoke(sid)
 
@@ -281,6 +299,10 @@ class Runtime:
             return [f"error: no tool called {name}"]
         if name in hidden_tools():
             return [f"error: {name} isn't available on this machine (see auren doctor)"]
+        if self.blindfold and name not in BLINDFOLD_TOOLS:
+            return [f"error: {name} isn't allowed in Blindfold mode: it would leave the user's window, show something "
+                    "or use the clipboard. Don't ask the user: finish in the focused window with look_at_screen, click_at, "
+                    "scroll_at, type_text and press_keys, or reply failed."]
         c = _Call(self, sid, t.lock)
         token = _call.set(c)
         try:
@@ -663,7 +685,7 @@ def prompt_agent(agent: str, text: str, hint: str = "", wait: bool = True, timeo
     to the agent so they can watch (the result's `view` says whether they can see it; don't claim it's
     showing otherwise). With wait=True returns its reply when it finishes (good for quick questions);
     use wait=False for long work."""
-    out = _run(herdr.prompt_agent, agent, text, hint, wait, timeout_s, show=True)
+    out = _run(herdr.prompt_agent, agent, text, hint, wait, timeout_s, show=not _blindfold())
     if out.startswith("error:"):
         return out
     d = json.loads(out)
@@ -684,9 +706,10 @@ def start_agent(kind: str = "", folder: str = "~", name: str = "", task: str = "
     agent was started with. The folder is trusted for the agent, so it starts without asking. The user's view switches to the new tab so they can watch (the result's
     `view` says whether they can see it; don't claim it's showing otherwise). For big jobs keep
     wait=False and tell the user it's running."""
-    if sys.platform == "darwin" and not active("herdr"):
+    if sys.platform == "darwin" and not active("herdr") and not _blindfold():   # Blindfold: no new window
         return _run(desktop.start_in_terminal, kind, folder, task, model, effort)
-    out = _run(herdr.start_agent, kind, folder, name, task, wait, timeout_s, show=True, model=model, effort=effort)
+    out = _run(herdr.start_agent, kind, folder, name, task, wait, timeout_s, show=not _blindfold(),
+               model=model, effort=effort)
     if out.startswith("error:"):
         return out
     d = json.loads(out)
@@ -995,6 +1018,60 @@ def _risky(keys: str) -> bool:
     parts = [p.strip().lower() for p in keys.split("+") if p.strip()]
     return frozenset(_MOD_NAMES.get(p, p) for p in parts) in _RISKY
 
+# Blindfold mode (docs/blindfold.md): only what works inside the user's focused window, without showing anything.
+# herdr agents may run, but in the background (prompt_agent and start_agent don't show their tab then).
+BLINDFOLD_TOOLS = frozenset({
+    "system_state", "system_lookup", "system_info", "list_agents", "read_agent", "prompt_agent", "start_agent",
+    "job_status", "close_job", "look_at_screen", "click_at", "drag_at", "scroll_at", "type_text", "press_keys",
+    "confirm_action",
+})
+# Keys that open a tab or window, switch away, or use the clipboard (Super, Alt+Tab, XF86 and Print are refused
+# whatever else is held: Omarchy binds them to other windows and apps).
+BLINDFOLD_KEYS = {
+    "ctrl+t", "ctrl+n", "ctrl+shift+n", "ctrl+shift+t", "ctrl+tab", "ctrl+shift+tab", "ctrl+pageup", "ctrl+pagedown",
+    "ctrl+c", "ctrl+x", "ctrl+v", "ctrl+insert", "shift+insert", "ctrl+shift+c", "ctrl+shift+v", "ctrl+shift+x",
+    "ctrl+alt+delete",
+}
+_KEY_ALIASES = {"return": "enter", "esc": "escape", "prior": "pageup", "page_up": "pageup", "pgup": "pageup",
+                "next": "pagedown", "page_down": "pagedown", "pgdn": "pagedown", "ins": "insert", "del": "delete"}
+
+
+def _blindfold() -> bool:
+    return _call.get().runtime.blindfold
+
+
+def _combo(keys: str) -> str:
+    """A shortcut written one way: "Shift + Control + PgUp" -> "ctrl+shift+pageup"."""
+    parts = [p.strip().lower() for p in keys.split("+") if p.strip()]
+    if not parts:
+        return ""
+    mods = {_MOD_NAMES.get(m, m) for m in parts[:-1]}
+    key = _KEY_ALIASES.get(parts[-1], _MOD_NAMES.get(parts[-1], parts[-1]))
+    return "+".join([m for m in ("ctrl", "shift", "alt", "super") if m in mods] + [key])
+
+
+def _blindfold_keys(keys: str) -> str:
+    """Blindfold: why these keys aren't allowed ("" if they are)."""
+    combo = _combo(keys)
+    *mods, key = combo.split("+") if combo else [""]
+    if ("super" in mods or key == "super" or (key == "tab" and "alt" in mods) or key.startswith("xf86") or key in ("print", "sysrq")
+            or combo in BLINDFOLD_KEYS or combo in RISKY_KEYS):
+        return (f"error: {keys} isn't allowed in Blindfold mode: it would open, close or switch windows or tabs, or use "
+                "the clipboard. Don't ask the user: stay in the focused window, or reply failed.")
+    return ""
+
+
+def _outside(*windows: str) -> str:
+    """Blindfold: an error if the mouse or keys would reach anything but the user's focused window ("" if not
+    in Blindfold, or all of `windows` are that window). A spot with no window (the bar, the desktop) is outside."""
+    if not _blindfold():
+        return ""
+    front = screen.active_window()
+    if front and all(w == front for w in windows):
+        return ""
+    return ("error: Blindfold mode works only in the focused window, and that would reach another window, the bar or "
+            "the desktop. Don't ask the user: look_at_screen again and stay in the focused window, or reply failed.")
+
 
 def _enter(keys: str, terminal: bool) -> str:
     """What a key press does to typed text, read as screen.press_keys reads it: "send" (Enter, Ctrl+Enter;
@@ -1169,6 +1246,8 @@ def click_at(x: int, y: int, target: str, button: str = "left", double: bool = F
     """Click at pixel (x, y) of the latest look_at_screen image. target: what you are clicking, in words
     (for example "Allow on Chrome's download popup"). Look again afterwards to check it worked. Clicks
     that buy, pay, send, post, submit or delete make the tool ask the user itself: just click, don't ask first."""
+    if outside := _outside(screen.window_at(x, y)):
+        return outside
     window = screen.window_at(x, y) or screen.key_target()
     if held := _held(window):
         return held
@@ -1201,6 +1280,10 @@ def drag_at(x1: int, y1: int, x2: int, y2: int, target: str, hold: str = "") -> 
     slider, an item or a window, select text. hold: "shift" (in drawing apps: a perfect circle or square),
     "ctrl", "alt", or several joined with "+". target: what you are doing, in words. Look again afterwards.
     Drags that delete or send something (to the trash, onto Send) make the tool ask the user itself."""
+    if outside := _outside(screen.window_at(x1, y1), screen.window_at(x2, y2)):
+        return outside
+    if _blindfold() and (refused := _blindfold_keys(hold)):         # Super+drag moves windows
+        return refused
     window = screen.window_at(x1, y1) or screen.key_target()
     if held := _held(window):
         return held
@@ -1215,6 +1298,8 @@ def drag_at(x1: int, y1: int, x2: int, y2: int, target: str, hold: str = "") -> 
 @tool(lock=SCREEN)
 def scroll_at(x: int, y: int, direction: str = "down", amount: int = 3) -> str:
     """Scroll the mouse wheel at pixel (x, y) of the latest look_at_screen image."""
+    if outside := _outside(screen.window_at(x, y)):
+        return outside
     return _run(screen.scroll, x, y, direction, amount)
 
 
@@ -1222,16 +1307,20 @@ def scroll_at(x: int, y: int, direction: str = "down", amount: int = 3) -> str:
 def type_text(text: str) -> str:
     """Type text into whatever has keyboard focus (click the field first). It is pasted in one go, so a
     newline is a line break, not Enter: press Enter with press_keys to send. Enter or a Send click afterwards
-    sends what you typed, and that may ask the user (just do it, don't ask first)."""
+    sends what you typed, and that may ask the user (just do it, don't ask first). In Blindfold mode it's typed
+    key by key instead (never pasted), a newline as Shift+Enter, and it comes out exactly as written, in a code
+    editor too (no auto-closed brackets or extra indent): to fix one part, put the cursor there and type just that."""
     s = _session_now()
     window = screen.key_target()
+    if outside := _outside(window):
+        return outside
     if held := _held(window):
         return held
     app = screen.window(window).get("class", "") if window else ""
     before = s.keyed.get(window)
 
     def typed() -> str:
-        out = screen.type_text(text)
+        out = screen.type_keys(text) if _blindfold() else screen.type_text(text)
         k = s.keyed.get(window)
         if k and (k.terminal or not k.fresh):
             k.text += text                      # the box (a terminal's line) holds what was typed before it too
@@ -1267,6 +1356,8 @@ def press_keys(keys: str) -> str:
     """Press a key or shortcut in the focused window: 'Enter', 'Escape', 'Tab', 'ctrl+s', 'ctrl+t'...
     Shortcuts that close windows or quit apps make the tool ask the user itself."""
     window = screen.key_target()            # where the keys will go (the window auren last clicked, if recent)
+    if _blindfold() and (refused := _blindfold_keys(keys) or _outside(window)):
+        return refused
     if held := _held(window):
         return held
     if _risky(keys):

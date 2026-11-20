@@ -162,6 +162,8 @@ seconds.
 
 Auren asks before anything risky, and always asks before publishing, buying or changing the system, except at Full access (`never`), which asks about nothing.
 These checks catch mistakes, but they are not a sandbox.
+[Blindfold mode](docs/blindfold.md), only for the blindfold test, forces Full access while it is on: silent,
+no questions, and only the focused window.
 
 Your voice goes to AssemblyAI, and your request goes to Claude or Codex. The voice, your history and
 logs stay on your machine. Read [Safety](docs/safety.md) and [Privacy](docs/privacy.md) for the details.

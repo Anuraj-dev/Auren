@@ -7,7 +7,8 @@
 # available, confirm, updating, failed (Updates page), refused (Vocabulary page), pairing (a QR code up),
 # tsoff (Tailscale off on the PC), nophone (none paired, not listening), app (Get the app's QR code) (Phone page), cursor, nav, down (the keyboard cursor; down goes to the page's last row),
 # awaiting (Auren is asking two yes/no questions: every page of that run shows it), autosend (auto-send is on,
-# after 5 s: every page of that run too).
+# after 5 s: every page of that run too),
+# blindfold, blindfold-running, blindfold-ok, blindfold-failed (Blindfold mode: Home's switch and the bar icon).
 # PANEL_MAX_HEIGHT=500 caps the panel's height like a short screen does. PANEL_PACKAGED=1 shows an install
 # made with the Arch package.
 #

@@ -79,6 +79,15 @@ Panel {
     return "GPT-" + parts[1] + " " + parts.slice(2).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")
   }
   readonly property string safety: st.safety || "ask"
+  // Blindfold mode (docs/blindfold.md): the bar icon is dim while a request runs, then green or red until the next.
+  readonly property bool blindfoldOn: daemonAlive && st.blindfold === true
+  readonly property string blindfoldState: !blindfoldOn ? ""
+                                           : ["listening", "thinking", "working", "speaking"].indexOf(mood) >= 0 ? "running"
+                                           : st.blindfoldResult === "ok" || st.blindfoldResult === "failed" ? st.blindfoldResult : ""
+  readonly property string blindfoldText: blindfoldState === "running" ? (mood === "listening" ? "Blindfold: listening" : "Blindfold: working")
+                                        : blindfoldState === "ok" ? "Blindfold: done"
+                                        : blindfoldState === "failed" ? "Blindfold: failed" + (st.blindfoldReason ? " (" + st.blindfoldReason + ")" : "")
+                                        : "Blindfold on"
   readonly property string voiceName: st.voiceName || voiceChoices[0].value
   // Auto-send: the daemon sends by itself once no new words come for autosendAfter seconds. Off, it reminds
   // the user to press Super+A after 3 s of quiet and sends after 12 s (daemon.REMIND_AFTER, SEND_AFTER).
@@ -518,6 +527,7 @@ Panel {
   }
   function toggleAuren() { systemctl(root.daemonActive || root.daemonAlive ? "stop" : "start", "auren") }
   function toggleVoice() { ctlRun(["voice", root.voiceOn ? "off" : "on"]) }
+  function toggleBlindfold() { ctlRun(["blindfold", root.blindfoldOn ? "off" : "on"]) }
   function toggleMascot() { systemctl(root.mascotActive ? "stop" : "start", "auren-mascot") }
   function setBrain(mode) { ctlRun(["brain", mode]) }
   function setEffort(level) { if (level !== root.effort) ctlRun(["effort", level]) }
@@ -577,6 +587,7 @@ Panel {
   readonly property string statusText: {
     if (!root.daemonAlive) return root.daemonActive ? "Starting…" : "Off"
     if (root.awaiting) return "Waiting for your yes or no"
+    if (root.blindfoldOn) return root.blindfoldText
     switch (root.mood) {
       case "starting": return "Waking up…"
       case "listening": return st.remind ? "Still listening" : "Listening…"
@@ -642,6 +653,8 @@ Panel {
       enabled: root.daemonAlive, run: root.toggleVoice },
     { label: "Mascot", icon: "󰏩", tip: "Show or hide the mascot (hidden frees ~100 MB)", on: root.mascotActive,
       enabled: !root.updating, run: root.toggleMascot },
+    { label: "Blindfold", icon: "󰈉", tip: "Blindfold test: silent, no questions, green or red in the bar (docs/blindfold.md)",
+      on: root.blindfoldOn, enabled: root.daemonAlive, run: root.toggleBlindfold },
     { label: "Fresh", icon: "󰑓", tip: "Start a fresh conversation", enabled: root.daemonAlive, run: root.startFresh },
     { label: "Stop", icon: "󰓛", tip: "Stop listening, thinking or talking", enabled: root.daemonAlive, run: root.stopTalking }
   ]
@@ -792,6 +805,7 @@ Panel {
       MiniMascot {
         kind: root.kind
         mood: root.awaiting ? "awaiting" : root.mood
+        blindfold: root.blindfoldState
         foreground: button.foreground
         Rectangle {       // an update is waiting
           visible: root.updateAvailable

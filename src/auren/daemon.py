@@ -18,6 +18,7 @@
     auren-ctl safety ask|task|free|never    # how much it asks before risky actions (saved in config.toml)
     auren-ctl autosend on|off|toggle  # send by itself when you stop talking (off: remind you to press Super+A)
     auren-ctl autosend after 5        # seconds without new words before auto-send sends (1 to 15)
+    auren-ctl blindfold on|off|toggle # Blindfold mode, only for the blindfold test (docs/blindfold.md)
     auren-ctl yes | no                # answer the question(s) it is waiting on (the bubble's buttons do this)
     auren-ctl reload                  # re-read config.toml and the vocabulary (auren config and auren vocab send this)
 
@@ -50,7 +51,7 @@ import time
 from dataclasses import dataclass
 
 from . import notice
-from .brain import Brain, BrainError, Interrupted
+from .brain import Brain, BrainError, Interrupted, prompt
 from .config import LOCK, MAC, RUNTIME_DIR, SOCKET, STATE_DIR, STATE_FILE, TOOLS_SOCKET
 from .ears import Listening, vocabulary
 from .live import Level, describe, notice_kind
@@ -75,6 +76,7 @@ QUIET_TICK = 0.2         # how often a listen checks for quiet
 # last one repeats until it works.
 VOICE_RETRY = (30, 60, 120, 300, 600)
 ALREADY_SENT = 2         # seconds after a send by itself (of something heard) in which the talk key does nothing
+BLINDFOLD_TIMEOUT = 300  # seconds a Blindfold request may take before it's stopped and shown as failed
 # Said on its own, these start a fresh conversation instead of going to the brain.
 FORGET = re.compile(r"^\W*(?:(?:ok(?:ay)?|hey|auren)\W+)*(?:start (?:fresh|over|a new conversation)|new conversation|"
                     r"forget (?:everything|all that|it all|our conversation)|clear (?:your|the) memory|reset (?:yourself|the conversation))"
@@ -97,6 +99,17 @@ class Turn:
     open: bool = True           # until the answer ends (or nothing was heard, or it was cancelled)
 
 
+def blindfold_result(reply: str) -> tuple[bool, str]:
+    """The brain's status in Blindfold mode: "ok" is done; "failed: why" (or anything else, which is then
+    the reason) is a failure. Returns (ok, reason)."""
+    text = reply.strip().strip("\"'`“”‘’")
+    if re.fullmatch(r"ok[.!]?", text, re.I):
+        return True, ""
+    if m := re.match(r"failed\b\W*(.*)", text, re.I | re.S):
+        return False, m.group(1).strip() or "failed"
+    return False, text or "no reply"
+
+
 class Daemon:
     _open: tuple[Turn, ...] = ()          # admitted turns, oldest first: while one is open, anyone else gets "busy"
     _hearing: Turn | None = None          # the turn the current listen belongs to
@@ -113,6 +126,8 @@ class Daemon:
     _quiet_watch: asyncio.Task | None = None   # the current listen's _watch_quiet (kept: the loop holds tasks weakly)
     _voice_task: asyncio.Task | None = None    # _fetch_voice, while the voice is missing (one at a time)
     _voice_wake: asyncio.Event | None = None   # set by voice-load: try the cache now, not after the wait
+    _blind_result: str | None = None     # Blindfold: how the last request ended, "ok" or "failed" (None: none yet, or one runs)
+    _blind_reason = ""
 
     def __init__(self, speak: bool = True):
         self.settings = load_settings()
@@ -120,10 +135,11 @@ class Daemon:
         self.tools = Runtime(TOOLS_SOCKET)           # serving from serve() on
         s = self.settings
         self.tools.level = s["safety"]
+        self.voice = None                             # before _blindfold, which stops it
+        self._blindfold(s["blindfold"])
         self.brain = Brain(self.tools, SESSION, mode=s["brain"], effort=s["effort"], claude_model=s["brain.claude_model"],
                            codex_model=s["brain.codex_model"], codex_effort=s["brain.codex_effort"])
         self._keys_lock = threading.Lock()            # macOS: one talk-key tap at a time (_listen_for_keys)
-        self.voice = None
         self.speak_enabled = speak                    # False: started with --quiet, the voice isn't even loaded
         self.vocab = vocabulary(self.profile)
         self.listening: Listening | None = None
@@ -142,7 +158,9 @@ class Daemon:
                                    "brain": "codex" if self.brain.using_backup else "claude",
                                    "mode": self.brain.mode, "effort": self.brain.primary.effort, "codexModel": self.brain.backup.model,
                                    "codexEffort": self.brain.backup.effort, "voice": self.voice_on,
-                                   "safety": self.tools.level,
+                                   "safety": self.tools.chosen,          # the user's level, also in Blindfold
+                                   "blindfold": self.tools.blindfold, "blindfoldResult": self._blind_result,
+                                   "blindfoldReason": self._blind_reason,
                                    "voiceName": self.voice.name if self.voice else self.settings["voiceName"],
                                    "voices": list(VOICES),
                                    "tts": tuning(self.settings), "autosend": self.autosend,
@@ -180,7 +198,8 @@ class Daemon:
         try:
             extra = {k: v for k, v in json.loads(STATE_FILE.read_text()).items()
                      if k not in ("state", "detail", "since", "pid", "brain", "mode", "effort", "codexModel", "codexEffort",
-                                  "voice", "voiceName", "voices", "tts", "safety", "autosend", "autosendAfter", "origin")}
+                                  "voice", "voiceName", "voices", "tts", "safety", "autosend", "autosendAfter", "origin",
+                                  "blindfold", "blindfoldResult", "blindfoldReason")}
         except (OSError, json.JSONDecodeError):
             extra = {}
         self.set_state(self.state, self.detail, **extra)
@@ -413,13 +432,21 @@ class Daemon:
             return "safety " + level
         if cmd == "autosend":
             return self._autosend(arg.split())
+        if cmd == "blindfold":
+            want = {"on": True, "off": False, "toggle": not self.tools.blindfold}.get(arg.strip())
+            if want is None:
+                return "usage: blindfold on|off|toggle"
+            self._save({"blindfold": want})
+            self._blindfold(want)
+            self._refresh_state()
+            return "blindfold " + ("on" if want else "off")
         if cmd in ("yes", "no"):
             return self.yes_no(cmd == "yes", Turn("desk"), "button")
         if cmd == "status":
             return json.dumps({"state": self.state, "detail": self.detail,
                                "brain": "codex" if self.brain.using_backup else "claude",
                                "mode": self.brain.mode, "effort": self.brain.primary.effort,
-                               "voice": self.voice_on, "safety": self.tools.level})
+                               "voice": self.voice_on, "safety": self.tools.chosen, "blindfold": self.tools.blindfold})
         if cmd == "reload":
             return self._reload()
         if cmd == "permissions" and MAC:          # macOS asks this process, the one that needs them
@@ -512,6 +539,8 @@ class Daemon:
             self._listen_for_keys()
         if new["safety"] != old["safety"]:
             self.tools.set_level(new["safety"])
+        if new["blindfold"] != old.get("blindfold", False):
+            self._blindfold(new["blindfold"])
         if self.voice:
             if new["voiceName"] != old["voiceName"]:
                 try:
@@ -590,6 +619,7 @@ class Daemon:
         if not self.admit(turn):
             return self._desk_refused()
         self._hearing = turn
+        self._blind_start()
         if self.voice:
             self.voice.stop()            # talking over auren interrupts it
         if fresh:                        # restart the brain while the user speaks; the answer waits for it
@@ -605,6 +635,9 @@ class Daemon:
             await self.listening.start()
         except Exception as e:  # noqa: BLE001
             self.listening = None
+            if self._blind_end(False, f"couldn't start listening: {e}"):
+                self._close(turn)
+                return f"error: {e}"
             self._notify("Auren couldn't start listening", str(e), "error")
             self._close(turn)
             self.set_state("error", str(e))
@@ -723,6 +756,8 @@ class Daemon:
         self.level.set(0)
         if session.held_seconds < MIN_HOLD:
             await session.cancel()
+            if self.tools.blindfold:
+                return self._blind_default("key tap", turn)
             self._close(turn)
             self.set_state("idle", "key tap ignored")
             return "too short"
@@ -737,6 +772,8 @@ class Daemon:
             self._close(turn)
             return "cancelled"
         heard_in = time.perf_counter() - t
+        if not text and self.tools.blindfold:
+            return self._blind_default(f"mic: {session.error}" if session.error else "heard nothing", turn)
         if session.error and not text:
             self._notify("Auren couldn't hear you", session.error, "error")
             self._close(turn)
@@ -753,6 +790,7 @@ class Daemon:
         return "heard: " + text
 
     async def cancel(self) -> None:
+        running = self.listening is not None or bool(self._finishing) or self.state in ("listening", "thinking", "working")
         if self.listening or self._finishing:
             # The turn is the one heard now: a newer press while this awaits isn't this Stop's to close.
             session, hearing = self.listening, self._hearing
@@ -768,7 +806,8 @@ class Daemon:
             self._show("Stopped", "stopped")
         if self.voice:
             self.voice.stop()
-        self.set_state("idle", "cancelled")
+        if not (running and self._blind_end(False, "cancelled")):
+            self.set_state("idle", "cancelled")
 
     # --- answering ------------------------------------------------------------------------
 
@@ -794,6 +833,9 @@ class Daemon:
         """Answer a request. Its turn (admitted by the caller) stays open until the answer ends."""
         turn = turn or Turn("desk")
         try:
+            if self.tools.blindfold:
+                await self._respond_blind(text, source, heard_s, turn)
+                return
             if source != "phone-share" and FORGET.match(text):
                 await self.forget(turn=turn)
                 return
@@ -807,6 +849,23 @@ class Daemon:
                     await self._think(text, source, heard_s, turn=turn)
         finally:
             self._close(turn)
+
+    def _blind_default(self, why: str, turn: Turn) -> str:
+        """Blindfold: the talk key without words (a double tap, silence, or a mic that failed) means the default
+        job, answering the question on screen; the screen is all it needs."""
+        log.info("blindfold: no words (%s), answering what's on screen", why)
+        asyncio.create_task(self.respond(prompt.BLINDFOLD_DEFAULT, source="voice", turn=turn))
+        return "heard: " + prompt.BLINDFOLD_DEFAULT
+
+    async def _respond_blind(self, text: str, source: str, heard_s: float | None, turn: Turn) -> None:
+        """Blindfold mode: no questions to answer (it asks none), nothing said; the bar shows how it went."""
+        self._blind_start()
+        if FORGET.match(text):
+            await self.forget(say=False, turn=turn)
+            self._blind_end(True)
+            return
+        async with self.busy:
+            await self._think(text, source, heard_s, turn=turn)
 
     def _close(self, turn: Turn) -> None:
         if turn.open:
@@ -871,6 +930,7 @@ class Daemon:
                      same_task: bool = False, already: list[str] | None = None, turn: Turn | None = None) -> None:
         """Ask the brain (the lock is held). text: what the user said; brain_text: what the brain gets, if not that."""
         t0 = time.perf_counter()
+        blind = self.tools.blindfold          # as it was when the request came in
         # Counted here, before "thinking" shows: a cancel from now on sticks (the worker can't undo it). The judge
         # reads what the user said once: an answer's follow-up (brain_text) was counted by _answer.
         self.tools.new_turn(SESSION, same_task=same_task,          # once per user message, whichever brain answers
@@ -907,20 +967,28 @@ class Daemon:
             return said
 
         try:
-            reply = await asyncio.to_thread(run)
-        except Interrupted:
+            reply = await self._run_brain(run, BLINDFOLD_TIMEOUT if blind else None)
+        except (Interrupted, TimeoutError) as e:
+            timed_out = isinstance(e, TimeoutError)
             self._earlier = earlier + self._earlier        # the brain never got them
-            log.info("cancelled while %s", "working" if tools else "thinking")
-            self._history({"at": time.time(), "source": source, "transcript": text, "reply": "(cancelled)",
+            log.info("%s while %s", "timed out" if timed_out else "cancelled", "working" if tools else "thinking")
+            self._history({"at": time.time(), "source": source, "transcript": text,
+                           "reply": "(timed out)" if timed_out else "(cancelled)",
                            "tools": tools, "heard_s": heard_s, "think_s": round(time.perf_counter() - t0, 2),
                            "brain": "codex" if self.brain.using_backup else "claude"})
             if not self.listening:            # the talk key may already have started the next listen
-                self.idle("cancelled")
+                if not (blind and self._blind_end(False, f"timed out after {BLINDFOLD_TIMEOUT}s" if timed_out else "cancelled")):
+                    self.idle("cancelled")
             return
         except BrainError as e:
             self._earlier = earlier + self._earlier
-            reply = "Sorry, my brain hit an error: " + str(e)[:120]
+            reply = ("failed: brain error: " if blind else "Sorry, my brain hit an error: ") + str(e)[:120]
             log.error("brain error: %s", e)
+        except Exception as e:            # noqa: BLE001 - Blindfold shows red rather than being stuck on "thinking"
+            if not blind:
+                raise
+            reply = f"failed: {type(e).__name__}: {str(e)[:100]}"
+            log.exception("blindfold request failed")
         think_s = time.perf_counter() - t0
         if brain_text is None:                    # what the user asked, if this reply asked them something
             self._request = text if self.tools.batch(SESSION) else ""
@@ -929,7 +997,9 @@ class Daemon:
         self._history({"at": time.time(), "source": source, "transcript": text, "reply": reply, "tools": tools,
                        "heard_s": heard_s, "think_s": round(think_s, 2),
                        "brain": "codex" if self.brain.using_backup else "claude"})
-        if reply:
+        if blind:
+            self._blind_end(*blindfold_result(reply))
+        elif reply:
             await self._say(reply, turn)
         else:
             if turn and turn.origin == "phone" and self.phone:
@@ -945,7 +1015,52 @@ class Daemon:
             return
         await self.say(text)
 
+    async def _run_brain(self, run, limit: float | None) -> str:
+        """run() in a thread. Past `limit` seconds, the brain and its tools are stopped, and TimeoutError is
+        raised once the thread has finished (it can't be killed, and a tool may be mid-action)."""
+        work = asyncio.ensure_future(asyncio.to_thread(run))
+        if limit is None:
+            return await work
+        try:
+            return await asyncio.wait_for(asyncio.shield(work), limit)
+        except TimeoutError:
+            self.tools.cancel(SESSION)
+            await asyncio.to_thread(self.brain.interrupt)
+            with contextlib.suppress(Exception):
+                await work
+            raise
+
+    # --- Blindfold mode (docs/blindfold.md) ---------------------------------------------------------
+
+    def _blindfold(self, on: bool) -> None:
+        """Turn Blindfold on or off, from the next request: the approval level is "never" while it's on (the
+        user's own stays saved), nothing shows on screen or is said, and the bar's result starts blank."""
+        self.tools.set_blindfold(on)
+        notice.muted = on
+        if on and self.voice:
+            self.voice.stop()
+        self._blind_result, self._blind_reason = None, ""
+
+    def _blind_start(self) -> None:
+        """A request starts: the bar's last green or red goes (it's dim while this one runs)."""
+        if self.tools.blindfold:
+            self._blind_result, self._blind_reason = None, ""
+
+    def _blind_end(self, ok: bool, reason: str = "") -> bool:
+        """In Blindfold mode, end the request as ok or failed (the bar turns green or red; the reason is the
+        hover text). False, doing nothing, when Blindfold is off."""
+        if not self.tools.blindfold:
+            return False
+        reason = " ".join(reason.split())[:120]
+        self._blind_result, self._blind_reason = ("ok" if ok else "failed"), reason
+        log.info("blindfold %s%s", self._blind_result, f": {reason}" if reason else "")
+        self.idle(reason)
+        return True
+
     async def say(self, text: str) -> None:
+        if self.tools.blindfold:                    # nothing is said or shown; the history has it
+            self.idle(self.detail if self.state == "idle" else "")
+            return
         if not self.voice_on:
             self._notify("Auren", text)
             self.set_state("speaking", text, reply=text, silent=True)

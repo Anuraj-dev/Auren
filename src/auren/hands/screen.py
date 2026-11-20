@@ -299,16 +299,35 @@ _HOLD = {"shift": "KEY_LEFTSHIFT", "ctrl": "KEY_LEFTCTRL", "control": "KEY_LEFTC
 _DIGITS = {str(d): f"KEY_{d}" for d in range(10)}
 
 
+# Keys type_keys uses to keep a code editor from changing what it types (see _guarded).
+_EDIT = ("KEY_ENTER", "KEY_LEFT", "KEY_RIGHT", "KEY_HOME", "KEY_BACKSPACE")
+
+
+# Every printable ASCII character as (physical key, shift) on a US keyboard, for type_keys. The keys go
+# out from the virtual keyboard like a real keyboard's, so the app sees real keycodes. wtype makes up a
+# keymap instead, and Chromium misread its punctuation: a " or $ that landed on Backspace's keycode
+# deleted the letter before it, so Blindfold typed `echox` for `echo "$x"`.
+_US = {" ": ("KEY_SPACE", False), "\t": ("KEY_TAB", False),
+       **{c: (f"KEY_{c.upper()}", False) for c in "abcdefghijklmnopqrstuvwxyz"},
+       **{c: (f"KEY_{c}", True) for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"},
+       **{d: (k, False) for d, k in _DIGITS.items()},
+       **{c: (f"KEY_{d}", True) for c, d in zip("!@#$%^&*()", "1234567890", strict=True)},
+       **{c: (k, False) for c, k in zip("-=[]\\;'`,./", ("KEY_MINUS", "KEY_EQUAL", "KEY_LEFTBRACE", "KEY_RIGHTBRACE",
+          "KEY_BACKSLASH", "KEY_SEMICOLON", "KEY_APOSTROPHE", "KEY_GRAVE", "KEY_COMMA", "KEY_DOT", "KEY_SLASH"), strict=True)},
+       **{c: (k, True) for c, k in zip('_+{}|:"~<>?', ("KEY_MINUS", "KEY_EQUAL", "KEY_LEFTBRACE", "KEY_RIGHTBRACE",
+          "KEY_BACKSLASH", "KEY_SEMICOLON", "KEY_APOSTROPHE", "KEY_GRAVE", "KEY_COMMA", "KEY_DOT", "KEY_SLASH"), strict=True)}}
+
+
 def _keys():
-    """A virtual keyboard with the modifier and digit keys: for holding modifiers during a drag, and for
-    shortcuts by physical key (press_code)."""
+    """A virtual keyboard: for holding modifiers during a drag, shortcuts by physical key (press_code) and
+    typing (type_keys)."""
     global _keyboard
     if _keyboard is None:
         from evdev import UInput
         from evdev import ecodes as e
         from evdev.uinput import UInputError
         try:
-            _keyboard = UInput({e.EV_KEY: [getattr(e, k) for k in sorted({*_HOLD.values(), *_DIGITS.values()})]},
+            _keyboard = UInput({e.EV_KEY: [getattr(e, k) for k in sorted({*_HOLD.values(), *_DIGITS.values(), *(k for k, _ in _US.values()), *_EDIT})]},
                                name="auren-virtual-keys")
         except (OSError, UInputError) as err:
             raise _KeyboardUnavailable(f"can't create a virtual keyboard via /dev/uinput: {err}") from None
@@ -466,6 +485,120 @@ def type_text(text: str) -> str:
     finally:
         clipboard.restore(saved, ours=text.encode())    # unless the user copied something meanwhile
     return f"pasted {len(text)} characters"
+
+
+KEY_DELAY_MS = 12       # per typed key: some apps drop letters that come faster
+
+
+def _us_layout() -> bool:
+    """Whether the keyboard layout is plain US, the one _US's keys are for."""
+    def opt(name: str) -> str:
+        return json.loads(_sh(["hyprctl", "getoption", f"input:{name}", "-j"])).get("str", "").strip()
+    try:
+        return opt("kb_layout") == "us" and not opt("kb_variant")
+    except (ScreenError, json.JSONDecodeError):
+        return False
+
+
+def _tap(kb, key: int, shift: bool) -> None:
+    from evdev import ecodes as e
+    half = KEY_DELAY_MS / 2000
+    if shift:
+        kb.write(e.EV_KEY, e.KEY_LEFTSHIFT, 1); kb.syn()
+    try:
+        kb.write(e.EV_KEY, key, 1); kb.syn()
+        time.sleep(half)
+    finally:                                   # never leave a key or Shift held down
+        kb.write(e.EV_KEY, key, 0); kb.syn()
+        if shift:
+            kb.write(e.EV_KEY, e.KEY_LEFTSHIFT, 0); kb.syn()
+    time.sleep(half)
+
+
+# Characters a code editor may answer by inserting more: an auto-closed bracket or quote, an auto-indent
+# after a line break, a suggestion accepted by Tab or Shift+Enter.
+_HELPED = re.compile(r"[\n\r\t(\[{\"'`]")
+SENTINEL = "x"
+
+
+def type_keys(text: str) -> str:
+    """Type text as real key presses only, never through the clipboard (Blindfold mode). A line break is
+    Shift+Enter, a new line in a chat or a multi-line field; a terminal has no such key (Shift+Enter runs the
+    line there), so text with line breaks fails in one. On a US layout every ASCII character goes out as its
+    real key from the virtual keyboard, exactly as if typed; other characters (and other layouts) go
+    through wtype.
+
+    Text a code editor would add to (brackets, quotes, line breaks, tabs) is typed so the editor can't:
+    - A letter (SENTINEL) sits just after the cursor while typing, then is deleted. Monaco, CodeMirror
+      and Ace only auto-close a bracket or quote before a space, a closer or the end of the line, never
+      before a letter, so `(` stays `(`. It goes with Right and Backspace, not Delete, which zsh
+      doesn't bind (it types `~`).
+    - After each line break, whatever indent the editor added is selected (Shift+Home twice: the first
+      stops where the indent ends, after a throwaway letter typed so there's always something to select)
+      and deleted, then the line's own indent is typed.
+    - Before a line break or Tab, a space and Backspace close any suggestion list, since Monaco accepts a
+      suggestion on Tab and Shift+Enter.
+    In a plain text box these are no-ops: the same text comes out."""
+    from evdev import ecodes as e
+    _refocus()
+    lines = re.split(r"\r\n|\r|\n", text)
+    if len(lines) > 1:
+        try:
+            app = json.loads(_sh(["hyprctl", "activewindow", "-j"])).get("class", "")
+        except (ScreenError, json.JSONDecodeError):
+            app = ""
+        if app.lower() in TERMINALS:
+            raise ScreenError("can't type line breaks in a terminal without running the line: type one line at a time")
+    real = _us_layout()
+    wtyped = 0
+    with _lock:
+        try:
+            kb = _keys() if real else None
+        except ScreenError:                    # no /dev/uinput: wtype it is, before any key went out
+            kb, real = None, False
+        guarded = bool(kb) and bool(_HELPED.search(text))
+
+        def char(c: str) -> None:
+            _tap(kb, getattr(e, _US[c][0]), _US[c][1])
+
+        def close_suggestions() -> None:
+            char(" ")
+            _tap(kb, e.KEY_BACKSPACE, False)
+
+        if guarded:
+            char(SENTINEL)
+            _tap(kb, e.KEY_LEFT, False)
+        for i, line in enumerate(lines):
+            if i:
+                if kb:
+                    if guarded:
+                        close_suggestions()
+                    _tap(kb, e.KEY_ENTER, True)
+                    if guarded:                # drop the editor's auto-indent
+                        char(SENTINEL)
+                        _tap(kb, e.KEY_HOME, True)
+                        _tap(kb, e.KEY_HOME, True)
+                        _tap(kb, e.KEY_BACKSPACE, False)
+                else:
+                    _sh(["wtype", "-M", "shift", "-k", "Return", "-m", "shift"])
+            # runs of characters the virtual keyboard has, and runs it doesn't (é, emoji)
+            for run in re.findall(r"[ -~\t]+|[^ -~\t]+", line) if kb else ([line] if line else []):
+                if kb and run[0] in _US:
+                    for c in run:
+                        if c == "\t" and guarded:
+                            close_suggestions()
+                        char(c)
+                else:
+                    _sh(["wtype", "-d", str(KEY_DELAY_MS), "--", run], timeout=10 + len(run) * KEY_DELAY_MS / 1000 * 2)
+                    wtyped += len(run)
+        if guarded:                            # Right, Backspace: zsh has no Delete key binding (it types ~)
+            _tap(kb, e.KEY_RIGHT, False)
+            _tap(kb, e.KEY_BACKSPACE, False)
+    breaks = f", {len(lines) - 1} line break(s) as Shift+Enter" if len(lines) > 1 else ""
+    if not wtyped:
+        return f"typed {len(text)} characters as real key presses{breaks}"
+    return (f"typed {len(text)} characters key by key{breaks}; {wtyped} of them through wtype"
+            + ("" if real else " (the keyboard layout isn't plain US)") + ": look again to check those came through")
 
 
 _KEY_NAMES = {"enter": "Return", "return": "Return", "esc": "Escape", "escape": "Escape", "tab": "Tab",

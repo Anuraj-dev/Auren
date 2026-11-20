@@ -221,7 +221,7 @@ ShellRoot {
 
   PanelWindow {
     id: win
-    visible: root.positionReady && !place.hidden
+    visible: root.positionReady && !place.hidden && root.st.blindfold !== true     // Blindfold: nothing on screen
     onVisibleChanged: if (!visible && area) area.cancelDrag()
     onScreenChanged: Qt.callLater(root.geometryChanged)
     color: "transparent"

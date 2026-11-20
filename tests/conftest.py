@@ -37,6 +37,7 @@ def _no_notices(monkeypatch):
     monkeypatch.setattr(notice, "_osd_at", 0.0)
     monkeypatch.setattr(notice, "_opening", [])
     monkeypatch.setattr(notice, "_mascot_running", lambda: False)
+    monkeypatch.setattr(notice, "muted", False)          # a Blindfold test turns it on; never for the next test
     monkeypatch.setattr(notice, "shown", shown, raising=False)
     return shown
 

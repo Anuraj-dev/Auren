@@ -247,7 +247,7 @@ def test_each_codex_turn_has_its_own_reply_file(monkeypatch, tmp_path):
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake.parent}:/usr/bin:/bin")
     monkeypatch.setattr(b, "brain_dir", lambda: tmp_path)
-    runtime = types.SimpleNamespace(socket=tmp_path / "t.sock", level="ask", summary=lambda s: "",
+    runtime = types.SimpleNamespace(socket=tmp_path / "t.sock", level="ask", blindfold=False, summary=lambda s: "",
                                     cancelled=lambda s: False)
     c = b.CodexBrain(runtime)
     monkeypatch.setattr(c.profile, "static_context", lambda: "")
