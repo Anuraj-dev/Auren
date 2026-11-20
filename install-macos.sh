@@ -5,6 +5,7 @@
 #   ./install-macos.sh            install into ~/.local/share/auren (a copy: the checkout can move or go)
 #   ./install-macos.sh --dev      the same, but linked to this checkout: code changes need only a restart
 #   ./install-macos.sh --check    only report what's missing (auren doctor, once installed)
+#   ./install-macos.sh --brew     from Homebrew's copy (what `auren setup` runs): brew's auren is on PATH
 #   --browser / --no-browser      set up the browser tools (Open Browser Use) or turn them off, without asking
 #   --keys=default / --no-keys    use Ctrl+Option+A as the talk key, or leave the keys as they are, without asking
 #
@@ -25,17 +26,23 @@ userbin="$HOME/.local/bin"
 mode=install
 browser=ask
 keys=ask
+brew=false
 for arg in "$@"; do
   case "$arg" in
+    --brew) brew=true ;;
     --dev) mode=dev ;;
     --check) mode=check ;;
     --browser) browser=yes ;;
     --no-browser) browser=no ;;
     --keys=default) keys=default ;;
     --no-keys) keys=keep ;;
-    *) echo "usage: $0 [--dev|--check] [--browser|--no-browser] [--keys=default|--no-keys]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--dev|--check|--brew] [--browser|--no-browser] [--keys=default|--no-keys]" >&2; exit 2 ;;
   esac
 done
+if $brew && [[ $mode == dev ]]; then
+  echo "usage: $0: --brew installs Homebrew's copy, --dev a checkout: not both" >&2
+  exit 2
+fi
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 warn() { printf '\033[33m! %s\033[0m\n' "$*"; }
@@ -44,7 +51,7 @@ warn() { printf '\033[33m! %s\033[0m\n' "$*"; }
 [[ $(uname -s) == Darwin ]] || { warn "this is the macOS installer: on Omarchy run ./install.sh"; exit 1; }
 if [[ $mode == check ]]; then
   [[ -x "$share/venv/bin/auren" ]] && exec "$share/venv/bin/auren" doctor
-  warn "Auren isn't installed yet: run ./install-macos.sh"
+  if $brew; then warn "Auren isn't set up yet: run auren setup"; else warn "Auren isn't installed yet: run ./install-macos.sh"; fi
   exit 1
 fi
 [[ $(uname -m) == arm64 ]] || { warn "Auren's voice needs an Apple Silicon Mac (this one is $(uname -m))"; exit 1; }
@@ -121,10 +128,14 @@ sync=(uv sync --project "$repo" --frozen --no-dev)
 [[ $mode == dev ]] || sync+=(--no-editable --reinstall-package auren)
 UV_PROJECT_ENVIRONMENT="$share/venv" "${sync[@]}"
 ln -sfn "$share/venv/bin/auren-ctl" "$share/bin/auren-ctl"
-mkdir -p "$userbin"
-ln -sfn "$share/venv/bin/auren" "$userbin/auren"
-ln -sfn "$share/venv/bin/auren-ctl" "$userbin/auren-ctl"
-[[ ":$PATH:" == *":$userbin:"* ]] || warn "$userbin isn't in your PATH: add it to ~/.zprofile, or run $share/venv/bin/auren"
+# Homebrew's auren and auren-ctl (in its bin, on PATH) run this venv. Links in ~/.local/bin from an
+# earlier ./install-macos.sh point at the same venv, so they're left as they are.
+if ! $brew; then
+  mkdir -p "$userbin"
+  ln -sfn "$share/venv/bin/auren" "$userbin/auren"
+  ln -sfn "$share/venv/bin/auren-ctl" "$userbin/auren-ctl"
+  [[ ":$PATH:" == *":$userbin:"* ]] || warn "$userbin isn't in your PATH: add it to ~/.zprofile, or run $share/venv/bin/auren"
+fi
 auren="$share/venv/bin/auren"
 
 # ---- the mascot's files ------------------------------------------------------------------------
@@ -179,7 +190,30 @@ else
 fi
 
 # ---- what's installed, for auren update ----------------------------------------------------------
-if git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+if $brew; then
+  # The keg's own folder (Cellar/auren/X.Y.Z/libexec, not opt/auren): auren update goes back to it if
+  # installing the next version fails. And the brew that installed it, which auren update runs.
+  source=$(cd "$repo" && pwd -P)
+  # >>> brew
+  if [[ $source == */Cellar/auren/* && -x "${source%%/Cellar/auren/*}/bin/brew" ]]; then
+    brew_bin="${source%%/Cellar/auren/*}/bin/brew"
+  elif command -v brew >/dev/null; then
+    brew_bin="$(brew --prefix)/bin/brew"
+  else
+    brew_bin=/opt/homebrew/bin/brew
+  fi
+  # <<< brew
+  [[ -x $brew_bin ]] || warn "Homebrew isn't at $brew_bin: auren update can't run brew upgrade auren"
+  "$share/venv/bin/python" - "$share/install.json" "$source" "$brew_bin" <<'PY'
+import json, os, sys, time
+from importlib.metadata import version
+path, source, brew = sys.argv[1:]
+with open(path + ".tmp", "w") as f:
+    json.dump({"version": version("auren"), "mode": "brew", "source": source, "brew": brew,
+               "installed_at": int(time.time())}, f)
+os.replace(path + ".tmp", path)
+PY
+elif git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
   dirty=false
   [[ -z "$(git -C "$repo" status --porcelain --untracked-files=no)" ]] || dirty=true
   "$share/venv/bin/python" - "$share/install.json" "$repo" "$mode" \
@@ -209,7 +243,11 @@ case $browser in
     "$auren" config set integrations.browser false >/dev/null
     say "Browser tools: off (auren browser setup turns them on)" ;;
   later)
-    warn "the browser tools aren't set up: run auren browser setup (or ./install-macos.sh --browser)" ;;
+    if $brew; then
+      warn "the browser tools aren't set up: run auren browser setup (or auren setup --browser)"
+    else
+      warn "the browser tools aren't set up: run auren browser setup (or ./install-macos.sh --browser)"
+    fi ;;
 esac
 
 # ---- setup -------------------------------------------------------------------------------------
