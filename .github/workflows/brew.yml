@@ -2,8 +2,8 @@ name: brew
 
 # Publishes a release to the Homebrew tap kvm404/homebrew-auren (brew install kvm404/auren/auren):
 # packaging/homebrew/auren.rb with the release's url and the checksum of GitHub's source tarball for
-# its tag, as Formula/auren.rb. Needs the secret HOMEBREW_TAP_TOKEN: a fine-grained token with Contents
-# read and write on that repository only (see docs/releases.md). Run it by hand for a release that
+# its tag, as Formula/auren.rb. Needs the secret HOMEBREW_TAP_KEY: the private half of an SSH deploy key
+# with write access on that repository only (see docs/releases.md). Run it by hand for a release that
 # wasn't published (Actions → brew).
 
 permissions:
@@ -60,13 +60,16 @@ jobs:
           cat /tmp/tap-out/auren.rb
       - name: Push to the tap
         env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_TAP_KEY: ${{ secrets.HOMEBREW_TAP_KEY }}
         run: |
-          [ -n "$HOMEBREW_TAP_TOKEN" ] || { echo "The HOMEBREW_TAP_TOKEN secret isn't set: see docs/releases.md"; exit 1; }
-          # The token goes in a header for these two commands only, never into the clone's config.
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HOMEBREW_TAP_TOKEN" | base64 -w0)"
-          echo "::add-mask::$(printf 'x-access-token:%s' "$HOMEBREW_TAP_TOKEN" | base64 -w0)"
-          git -c http.extraHeader="$auth" clone "https://github.com/$TAP.git" /tmp/tap
+          [ -n "$HOMEBREW_TAP_KEY" ] || { echo "The HOMEBREW_TAP_KEY secret isn't set: see docs/releases.md"; exit 1; }
+          keys=$(mktemp -d)
+          printf '%s\n' "$HOMEBREW_TAP_KEY" >"$keys/tap"
+          chmod 600 "$keys/tap"
+          # GitHub's published host key (gh api meta --jq .ssh_keys)
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >"$keys/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $keys/tap -o IdentitiesOnly=yes -o UserKnownHostsFile=$keys/known_hosts -o StrictHostKeyChecking=yes"
+          git clone "git@github.com:$TAP.git" /tmp/tap
           # Never replace a newer version (a late run for an older release): the same one is fine, like a
           # fixed checksum. FORCE (by hand) allows it.
           version="${TAG#v}"
@@ -91,4 +94,4 @@ jobs:
           git add Formula/auren.rb
           if git diff --cached --quiet; then echo "the tap already has this"; exit 0; fi
           git commit -m "auren ${TAG#v}"
-          git -c http.extraHeader="$auth" push origin HEAD
+          git push origin HEAD

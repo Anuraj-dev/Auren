@@ -125,12 +125,18 @@ key off the old account.
 1. Create the public repository `kvm404/homebrew-auren` with a README (so it has a `main` branch), for
    example: "Homebrew tap for Auren: `brew install kvm404/auren/auren`, then `auren setup`. The formula
    is published from packaging/homebrew/ in kvm404/Auren on each release: don't edit it here."
-2. Make a fine-grained personal access token (GitHub → Settings → Developer settings → Fine-grained
-   tokens) with access to that repository only, and the repository permission **Contents: Read and
-   write** (Metadata read-only comes with it). Give it an expiry date and note it down to renew.
-3. Add it to kvm404/Auren's Actions secrets as `HOMEBREW_TAP_TOKEN`
-   (`gh secret set HOMEBREW_TAP_TOKEN --repo kvm404/Auren`).
-4. Run the `brew` workflow from Actions for the latest tag, then check `brew install
+2. Make an SSH key for the workflow, add its public half to the tap as a deploy key with write access,
+   and its private half to kvm404/Auren's Actions secrets as `HOMEBREW_TAP_KEY`, then delete the key
+   files. A deploy key can push to that one repository only, and doesn't expire:
+
+   ```bash
+   ssh-keygen -t ed25519 -N "" -C "auren release workflow (homebrew tap)" -f tapkey
+   gh repo deploy-key add tapkey.pub --repo kvm404/homebrew-auren --allow-write --title "auren release workflow"
+   gh secret set HOMEBREW_TAP_KEY --repo kvm404/Auren < tapkey
+   shred -u tapkey && rm tapkey.pub
+   ```
+
+3. Run the `brew` workflow from Actions for the latest tag, then check `brew install
    kvm404/auren/auren` on a Mac.
 
 The formula in this repository has a placeholder `sha256` (all zeros); only the tap's copy carries the
