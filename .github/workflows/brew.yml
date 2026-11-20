@@ -17,6 +17,15 @@ on:
       tag:
         description: "Release tag to publish, like v0.1.8"
         required: true
+      force:
+        description: "Publish it even if the tap has a newer version (a downgrade)"
+        type: boolean
+        default: false
+
+# One publish at a time, in order: two releases close together mustn't race to the tap.
+concurrency:
+  group: homebrew-tap
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -25,6 +34,7 @@ jobs:
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       TAP: kvm404/homebrew-auren
+      FORCE: ${{ inputs.force && 'true' || 'false' }}
     steps:
       - name: Check the tag
         run: |
@@ -57,6 +67,22 @@ jobs:
           auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HOMEBREW_TAP_TOKEN" | base64 -w0)"
           echo "::add-mask::$(printf 'x-access-token:%s' "$HOMEBREW_TAP_TOKEN" | base64 -w0)"
           git -c http.extraHeader="$auth" clone "https://github.com/$TAP.git" /tmp/tap
+          # Never replace a newer version (a late run for an older release): the same one is fine, like a
+          # fixed checksum. FORCE (by hand) allows it.
+          version="${TAG#v}"
+          if [ -f /tmp/tap/Formula/auren.rb ]; then
+            have=$(sed -n 's#^  url ".*/v\([0-9][0-9.]*\)\.tar\.gz"$#\1#p' /tmp/tap/Formula/auren.rb)
+            echo "the tap has ${have:-an unknown version}, publishing $version"
+            if [ -n "$have" ] && [ "$have" != "$version" ] &&
+               [ "$(printf '%s\n%s\n' "$have" "$version" | sort -V | tail -1)" = "$have" ]; then
+              if [ "$FORCE" = true ]; then
+                echo "replacing the tap's newer $have with $version (force)"
+              else
+                echo "The tap has $have, newer than $version: not replacing it (run by hand with force to)"
+                exit 1
+              fi
+            fi
+          fi
           mkdir -p /tmp/tap/Formula
           cp /tmp/tap-out/auren.rb /tmp/tap/Formula/auren.rb
           cd /tmp/tap
