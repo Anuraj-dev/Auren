@@ -1,0 +1,68 @@
+name: brew
+
+# Publishes a release to the Homebrew tap kvm404/homebrew-auren (brew install kvm404/auren/auren):
+# packaging/homebrew/auren.rb with the release's url and the checksum of GitHub's source tarball for
+# its tag, as Formula/auren.rb. Needs the secret HOMEBREW_TAP_TOKEN: a fine-grained token with Contents
+# read and write on that repository only (see docs/releases.md). Run it by hand for a release that
+# wasn't published (Actions → brew).
+
+permissions:
+  contents: read
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, like v0.1.8"
+        required: true
+
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' || (!github.event.release.prerelease && !github.event.release.draft)
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      TAP: kvm404/homebrew-auren
+    steps:
+      - name: Check the tag
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG"; exit 1; }
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}       # the tag, never a branch of the same name
+          persist-credentials: false
+      - name: Fill in the url and checksum
+        run: |
+          # The formula from this tag; the tarball GitHub serves for the same tag
+          version="${TAG#v}"
+          grep -q "^version = \"$version\"$" pyproject.toml || { echo "pyproject.toml isn't version $version"; exit 1; }
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/$TAG.tar.gz"
+          curl -fsSL -o /tmp/source.tar.gz "$url"
+          sum=$(sha256sum /tmp/source.tar.gz | cut -d' ' -f1)
+          mkdir /tmp/tap-out
+          sed -e "s#^  url \".*\"\$#  url \"$url\"#" -e "s#^  sha256 \".*\"\$#  sha256 \"$sum\"#" \
+            packaging/homebrew/auren.rb >/tmp/tap-out/auren.rb
+          grep -qF "  url \"$url\"" /tmp/tap-out/auren.rb && grep -qF "  sha256 \"$sum\"" /tmp/tap-out/auren.rb ||
+            { echo "couldn't fill in packaging/homebrew/auren.rb"; exit 1; }
+          ruby -c /tmp/tap-out/auren.rb
+          cat /tmp/tap-out/auren.rb
+      - name: Push to the tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          [ -n "$HOMEBREW_TAP_TOKEN" ] || { echo "The HOMEBREW_TAP_TOKEN secret isn't set: see docs/releases.md"; exit 1; }
+          # The token goes in a header for these two commands only, never into the clone's config.
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HOMEBREW_TAP_TOKEN" | base64 -w0)"
+          echo "::add-mask::$(printf 'x-access-token:%s' "$HOMEBREW_TAP_TOKEN" | base64 -w0)"
+          git -c http.extraHeader="$auth" clone "https://github.com/$TAP.git" /tmp/tap
+          mkdir -p /tmp/tap/Formula
+          cp /tmp/tap-out/auren.rb /tmp/tap/Formula/auren.rb
+          cd /tmp/tap
+          git config user.name "kvm404"
+          git config user.email "kvm404@users.noreply.github.com"
+          git add Formula/auren.rb
+          if git diff --cached --quiet; then echo "the tap already has this"; exit 0; fi
+          git commit -m "auren ${TAG#v}"
+          git -c http.extraHeader="$auth" push origin HEAD
