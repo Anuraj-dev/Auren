@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import plistlib
+import re
 import sys
 from pathlib import Path
 
@@ -144,6 +145,24 @@ def app_state(text: str) -> str:
     return "blocked" if "blocked" in t else ""
 
 
+def listed_apps(text: str) -> dict[str, str] | None:
+    """--listapps's answer: {program path: "allowed" | "blocked" | ""}. Each program is a numbered line
+    ("1 :  /path"), with its rule on the next ("( Allow incoming connections )"). None: a format this
+    doesn't know (then nothing is taken as allowed)."""
+    apps: dict[str, str] = {}
+    last = None
+    for line in text.splitlines():
+        if m := re.match(r"^\s*\d+\s*:\s*(/.+?)\s*$", line):
+            last = m[1]
+            apps[last] = ""
+        elif last and apps[last] == "" and re.search(r"incoming", line, re.I):
+            t = line.lower()
+            apps[last] = "blocked" if "block" in t else "allowed" if "allow" in t else ""
+    if not apps and not re.search(r"total number of apps\s*=\s*0\b", text, re.I):
+        return None
+    return apps
+
+
 def listener() -> list[str]:
     """The programs the firewall may know the phone server as: the venv's Python (as macOS runs it, links
     followed) and Auren.app, whose child it is."""
@@ -171,10 +190,17 @@ def firewall_check(port: int) -> Check | None:
                      " this Mac", f"{FIREWALL_PANE}: turn off Block all incoming connections")
     programs = listener()
     names = " or ".join(dict.fromkeys(Path(p).name for p in programs))
+    # The firewall's own list says allowed or blocked. --getappblocked is asked too, but only its "blocked"
+    # counts: it says "permitted" for programs that aren't in the list at all.
+    code, out = _fw("--listapps")
+    apps = listed_apps(out) if code == 0 else None
+    listed = {os.path.realpath(path): rule for path, rule in (apps or {}).items()}
     found = {}
     for prog in programs:
         code, out = _fw("--getappblocked", prog)
-        found[prog] = app_state(out) if code == 0 else ""
+        asked = app_state(out) if code == 0 else ""
+        rule = listed.get(os.path.realpath(prog), "")
+        found[prog] = "blocked" if "blocked" in (rule, asked) else rule
     blocked = [Path(p).name for p, st in found.items() if st == "blocked"]
     if blocked:
         return Check(g, "firewall", WARN, f"the macOS firewall blocks {', '.join(blocked)}: the phone can't connect",

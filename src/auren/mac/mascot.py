@@ -395,6 +395,16 @@ def main() -> int:
         t.start(ms)
         timers.append(t)
 
+    # launchd stops the mascot with SIGTERM: quit through Qt, so aboutToQuit ends a pairing that's open. The
+    # timer lets Python run its signal handlers while Qt waits.
+    import signal
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: app.quit())
+    wake = QTimer()
+    wake.timeout.connect(lambda: None)
+    wake.start(500)
+    timers.append(wake)
+
     # ---- the menu bar icon ----------------------------------------------------------------------
     def icon(color: str) -> QIcon:
         pm = QPixmap(36, 36)

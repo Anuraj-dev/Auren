@@ -49,7 +49,8 @@ FILES = PHONE_DIR / "files"
 CERT = PHONE_DIR / "cert.pem"
 KEY = PHONE_DIR / "key.pem"
 STATUS = RUNTIME_DIR / "phone.json"     # the daemon's server: on or off, where, why not, and who's connected
-PAIR_QR = RUNTIME_DIR / "phone-pair.png"    # auren phone pair --json's QR code, for the bar panel (gone after)
+PAIR_QR = RUNTIME_DIR / "phone-pair.png"    # auren phone pair --json's QR codes, for the bar panel (gone after):
+                                            # each pairing has its own phone-pair-<random>.png (pair_qr_file)
 APP_QR = RUNTIME_DIR / "phone-app.png"      # auren phone app --json's QR code: where to download the app
 RELEASES = "https://github.com/kvm404/Auren/releases"
 TAILSCALE_SEEN = PHONE_DIR / "tailscale.json"   # this PC's Tailscale address, from when Tailscale was last up
@@ -358,6 +359,12 @@ def tailscale_cli() -> str | None:
     return next((p for p in MAC_TAILSCALE if os.access(p, os.X_OK)), None)
 
 
+def tailscale_env() -> dict | None:
+    """The environment to run the tailscale command in: on a Mac, TAILSCALE_BE_CLI=1, which the Tailscale app's
+    own binary needs to act as the CLI (other tailscale commands ignore it). None: as it is."""
+    return {**os.environ, "TAILSCALE_BE_CLI": "1"} if sys.platform == "darwin" else None
+
+
 def tailscale_up() -> str:
     """How to turn Tailscale on here."""
     return "turn Tailscale on (its menu bar icon, or tailscale up)" if sys.platform == "darwin" else "tailscale up"
@@ -371,7 +378,8 @@ def tailscale_ip() -> tuple[str | None, str]:
     if not cli:
         return None, "Tailscale isn't installed"
     try:
-        out = subprocess.run([cli, "status", "--json"], capture_output=True, text=True, timeout=5)
+        out = subprocess.run([cli, "status", "--json"], capture_output=True, text=True, timeout=5,
+                             env=tailscale_env())
     except (OSError, subprocess.TimeoutExpired) as e:
         return None, f"tailscale didn't answer ({type(e).__name__})"
     try:
@@ -708,6 +716,18 @@ def _open_pairing() -> tuple[dict, str, float] | str:
     return st, code, expires
 
 
+def pair_qr_file() -> Path:
+    """A QR code file of its own for one pairing, so one that ends late never deletes the next one's."""
+    return PAIR_QR.with_name(f"{PAIR_QR.stem}-{secrets.token_hex(4)}{PAIR_QR.suffix}")
+
+
+def is_pair_qr(path: str | Path) -> bool:
+    """Is this one of pair_qr_file's files (the only ones the Mac's Phone window may delete)?"""
+    p = Path(path)
+    return (p.parent == PAIR_QR.parent
+            and re.fullmatch(rf"{re.escape(PAIR_QR.stem)}-[0-9a-f]{{8}}\.png", p.name) is not None)
+
+
 def _pair_json() -> int:
     """auren phone pair --json, for the bar panel: one JSON line with the code and its QR code (a PNG), then one
     when a phone paired or the code expired. Stopping it (the panel's Cancel) ends the pairing at once."""
@@ -719,7 +739,7 @@ def _pair_json() -> int:
     def done(*_):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, done)
-    code = None
+    code = qr = None
     try:
         opened = _open_pairing()
         if isinstance(opened, str):
@@ -729,13 +749,14 @@ def _pair_json() -> int:
         bound = listening(st)
         uri = pair_uri([x["ip"] for x in reach(bound)], int(st["port"]), code, st["fp"])
         import segno
-        PAIR_QR.parent.mkdir(parents=True, exist_ok=True)
-        tmp = PAIR_QR.with_name(f".{PAIR_QR.name}.{os.getpid()}.tmp")
+        qr = pair_qr_file()
+        qr.parent.mkdir(parents=True, exist_ok=True)
+        tmp = qr.with_name(f".{qr.name}.{os.getpid()}.tmp")
         segno.make(uri, error="m").save(str(tmp), kind="png", scale=10, border=2, dark="#000", light="#fff")
         os.chmod(tmp, 0o600)                     # it holds the code
-        tmp.replace(PAIR_QR)
+        tmp.replace(qr)
         before = {d["id"] for d in devices()}
-        out(uri=uri, qr=str(PAIR_QR), expires=expires,
+        out(uri=uri, qr=str(qr), expires=expires,
             where=[{"ip": x["ip"], "via": x["via"]} for x in bound], warn=tailscale_off(st))
         while time.time() < expires:
             new = [d for d in devices() if d["id"] not in before]
@@ -751,7 +772,8 @@ def _pair_json() -> int:
         out(cancelled=True)
         return 130
     finally:
-        PAIR_QR.unlink(missing_ok=True)
+        if qr:                                   # its own file only: a newer pairing's QR code stays
+            qr.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:

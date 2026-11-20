@@ -7,6 +7,7 @@
 //   phone.pairQr, pairExpires, pairWhere, pairWarn            the code while it shows
 //   phone.appShown, appQr, appUrl, appText                    Get the app's QR code
 //   phone.phones         [{id, name, detail, connected}]      phone.unpairAsk  the phone whose Unpair asks again
+//   phone.stopping       a cancelled pairing is still stopping (Pair waits for it)
 //   phone.startPairing(), cancelPairing(), toggleApp(), unpair(id), closeWindow()
 //   phone.raiseWindow    (signal) asked for again while open: come forward
 import QtQuick
@@ -110,8 +111,9 @@ Window {
 
     Row {
       spacing: 8
-      Pill { visible: !w.pairing; primary: true; enabled: phone.alive
-             label: phone.phones.length ? "Pair another phone" : "Pair a phone"; onClicked: phone.startPairing() }
+      Pill { visible: !w.pairing; primary: true; enabled: phone.alive && !phone.stopping
+             label: phone.stopping ? "Stopping…" : phone.phones.length ? "Pair another phone" : "Pair a phone"
+             onClicked: phone.startPairing() }
       Pill { visible: w.pairing; primary: true; label: "Cancel"; onClicked: phone.cancelPairing() }
       Pill { visible: !w.pairing; label: phone.appShown ? "Hide the app code" : "Get the app"; onClicked: phone.toggleApp() }
     }

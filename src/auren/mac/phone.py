@@ -5,7 +5,8 @@ phone.lan_addresses on Linux (private IPv4 only, no /32, no loopback, tunnels, V
 a `status:` line. `networksetup -listallhardwareports` names the interfaces that are network hardware
 (Wi-Fi, Ethernet, a USB or Thunderbolt adapter, an iPhone over USB): an address is kept only on one of
 those, so a VPN or VM interface with a name no list knows is still left out. If networksetup doesn't
-answer, the names are judged by the list below alone.
+answer or lists none, only interfaces named like the Mac's own network hardware (en0, en1...) are kept:
+when in doubt, fewer addresses, never more.
 """
 
 from __future__ import annotations
@@ -21,7 +22,8 @@ NETWORKSETUP = "/usr/sbin/networksetup"
 # Thunderbolt Bridge, Internet Sharing, VMs), AirDrop and its low-latency link, the Apple network
 # coprocessor (anpi), the personal hotspot's access point, legacy tunnels, and VM/container NICs.
 VIRTUAL = ("lo", "utun", "ipsec", "ppp", "bridge", "awdl", "llw", "anpi", "ap", "gif", "stf", "vmenet", "vmnet",
-           "vnic", "feth", "tun", "tap", "zt", "wg", "docker")
+           "vnic", "vboxnet", "feth", "tun", "tap", "zt", "wg", "docker")
+HARDWARE_NAME = re.compile(r"en\d+")      # what macOS names Ethernet and Wi-Fi: the fallback without networksetup
 
 
 def _run(cmd: list[str]) -> str | None:
@@ -33,11 +35,12 @@ def _run(cmd: list[str]) -> str | None:
 
 
 def hardware_ports(text: str | None) -> set[str] | None:
-    """The devices `networksetup -listallhardwareports` lists (en0, en1...), bridges left out. None: no answer."""
+    """The devices `networksetup -listallhardwareports` lists (en0, en1...), bridges left out. None: no answer;
+    an empty set: it answered, but listed nothing usable (both mean nothing is verified)."""
     if text is None:
         return None
     found = set(re.findall(r"^Device:\s*(\S+)", text, re.M))
-    return {d for d in found if not d.startswith(VIRTUAL)} or None
+    return {d for d in found if not d.startswith(VIRTUAL)}
 
 
 def parse_ifconfig(text: str) -> list[dict]:
@@ -60,7 +63,8 @@ def parse_ifconfig(text: str) -> list[dict]:
 
 def pick_lan(links: list[dict], hardware: set[str] | None = None) -> list[str]:
     """The kept addresses of parse_ifconfig's interfaces (see the module's rules). hardware: the interfaces
-    that are network hardware (hardware_ports), or None when that isn't known."""
+    that are network hardware (hardware_ports); None or empty when that isn't known, and then only en<N>
+    interfaces are kept."""
     from ..phone import is_lan  # here: auren.phone imports this module at its end
     found: list[str] = []
     for link in links:
@@ -68,7 +72,7 @@ def pick_lan(links: list[dict], hardware: set[str] | None = None) -> list[str]:
         if ("UP" not in flags or "RUNNING" not in flags or "LOOPBACK" in flags or "POINTOPOINT" in flags
                 or name.startswith(VIRTUAL) or link.get("status") not in (None, "active")):
             continue
-        if hardware is not None and name not in hardware:
+        if name not in hardware if hardware else not HARDWARE_NAME.fullmatch(name):
             continue
         for ip, plen in link["inet"]:
             if plen < 32 and is_lan(ip) and ip not in found:

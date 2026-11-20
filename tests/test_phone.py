@@ -9,6 +9,7 @@ import stat
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient, WebSocketDenialResponse
@@ -1391,10 +1392,13 @@ def test_a_mac_finds_tailscale_where_its_apps_put_it(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "platform", "darwin")
     assert phone.tailscale_cli() == str(app)
     ran = []
-    monkeypatch.setattr(phone.subprocess, "run", lambda cmd, **kw: ran.append(cmd) or subprocess.CompletedProcess(
-        cmd, 0, stdout=json.dumps({"BackendState": "Stopped", "TailscaleIPs": ["100.100.1.2"]}), stderr=""))
+    monkeypatch.setattr(phone.subprocess, "run", lambda cmd, **kw: ran.append((cmd, kw["env"])) or
+                        subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(
+                            {"BackendState": "Stopped", "TailscaleIPs": ["100.100.1.2"]}), stderr=""))
     ip, why = REAL_TAILSCALE_IP()
-    assert ran == [[str(app), "status", "--json"]]
+    (cmd, env), = ran
+    assert cmd == [str(app), "status", "--json"]
+    assert env["TAILSCALE_BE_CLI"] == "1" and env["PATH"] == os.environ["PATH"]     # the app's binary acts as the CLI
     assert ip is None and why == "Tailscale is off: turn Tailscale on (its menu bar icon, or tailscale up)"
     monkeypatch.setattr(phone.shutil, "which", lambda name: "/opt/homebrew/bin/tailscale")
     assert phone.tailscale_cli() == "/opt/homebrew/bin/tailscale"          # PATH first
@@ -1404,9 +1408,14 @@ def test_doctor_asks_tailscale_where_it_is(monkeypatch):
     from auren import doctor
     asked = []
     monkeypatch.setattr(phone, "tailscale_cli", lambda: "/Applications/Tailscale.app/Contents/MacOS/Tailscale")
-    monkeypatch.setattr(doctor, "_run", lambda cmd: asked.append(cmd) or (0, '{"NetfilterMode": 2}'))
+    monkeypatch.setattr(doctor, "_run", lambda cmd, env=None: asked.append((cmd, env)) or (0, '{"NetfilterMode": 2}'))
+    monkeypatch.setattr(sys, "platform", "darwin")
     assert doctor._tailscale_lets_in()
-    assert asked == [["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "debug", "prefs"]]
+    (cmd, env), = asked
+    assert cmd == ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "debug", "prefs"]
+    assert env["TAILSCALE_BE_CLI"] == "1"
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert phone.tailscale_env() is None
 
 
 IFCONFIG = """\
@@ -1579,6 +1588,16 @@ def test_doctor_on_a_mac_says_how_to_start_auren_and_checks_the_macos_firewall(m
     assert asked == [8735] and found["firewall"].status == doctor.OK
 
 
+LISTAPPS = """ALF: total number of apps = 2
+
+1 :  /Applications/Spotify.app
+ \t ( Allow incoming connections )
+
+2 :  /u/python3.13
+ \t ( {python} incoming connections )
+"""
+
+
 @pytest.mark.parametrize("answers,status,says", [
     ({"--getglobalstate": "Firewall is disabled. (State = 0)"}, "ok", "off"),
     ({"--getglobalstate": "Firewall is enabled. (State = 1)",
@@ -1588,8 +1607,19 @@ def test_doctor_on_a_mac_says_how_to_start_auren_and_checks_the_macos_firewall(m
     ({"--getglobalstate": "Firewall is enabled. (State = 1)", "--getblockall": "Block all DISABLED!",
       "python3.13": "The application /u/python3.13 is blocked from receiving incoming connections.",
       "Auren.app": "The application /u/Auren.app is not part of the firewall."}, "warn", "blocks python3.13"),
+    # --getappblocked says "permitted" for programs that aren't even in the list: that alone isn't OK
     ({"--getglobalstate": "Firewall is enabled. (State = 1)", "--getblockall": "Firewall has block all state set to disabled.",
-      "python3.13": "The application /u/python3.13 is permitted to receive incoming connections."}, "ok", "allows"),
+      "python3.13": "The application /u/python3.13 is permitted to receive incoming connections.",
+      "--listapps": "ALF: total number of apps = 0 \n"}, "warn", "Click Allow"),
+    ({"--getglobalstate": "Firewall is enabled. (State = 1)", "--getblockall": "Firewall has block all state set to disabled.",
+      "python3.13": "The application /u/python3.13 is permitted to receive incoming connections.",
+      "--listapps": LISTAPPS.format(python="Allow")}, "ok", "allows"),
+    ({"--getglobalstate": "Firewall is enabled. (State = 1)", "--getblockall": "Firewall has block all state set to disabled.",
+      "python3.13": "The application /u/python3.13 is permitted to receive incoming connections.",
+      "--listapps": LISTAPPS.format(python="Block")}, "warn", "blocks python3.13"),
+    ({"--getglobalstate": "Firewall is enabled. (State = 1)", "--getblockall": "Firewall has block all state set to disabled.",
+      "python3.13": "The application /u/python3.13 is permitted to receive incoming connections.",
+      "--listapps": "something new: /u/python3.13 allowed"}, "warn", "Click Allow"),     # a format it doesn't know
     ({"--getglobalstate": "Firewall is enabled. (State = 1)", "--getblockall": "Firewall has block all state set to disabled.",
       "python3.13": "The application /u/python3.13 is not part of the firewall.",
       "Auren.app": "The application /u/Auren.app is not part of the firewall."}, "warn", "Click Allow"),
@@ -1885,15 +1915,18 @@ def test_pair_json_gives_the_bar_panel_a_qr_code_then_the_phone(monkeypatch, cap
     def phone_scans(_):                    # while it waits: the panel shows the PNG, the phone pairs with its code
         if "line" not in seen:
             seen["line"] = json.loads(capsys.readouterr().out)
-            seen["png"] = phone.PAIR_QR.read_bytes()
+            seen["png"] = Path(seen["line"]["qr"]).read_bytes()
             phone.pair(parse_qs(urlparse(seen["line"]["uri"]).query)["code"][0], "Pixel")
     monkeypatch.setattr(phone.time, "sleep", phone_scans)
+    newer = phone.pair_qr_file()                       # another pairing's QR code: a late cleanup must leave it
+    newer.write_bytes(b"newer")
     assert phone.main(["pair", "--json"]) == 0
     line = seen["line"]
-    assert line["qr"] == str(phone.PAIR_QR) and line["where"] == [{"ip": "192.168.1.20", "via": "lan"}]
+    assert phone.is_pair_qr(line["qr"]) and Path(line["qr"]) != newer
+    assert line["where"] == [{"ip": "192.168.1.20", "via": "lan"}]
     assert "Tailscale is off on this PC" in line["warn"] and seen["png"].startswith(b"\x89PNG")
     assert json.loads(capsys.readouterr().out)["paired"]["name"] == "Pixel"
-    assert not phone.PAIR_QR.exists()                                      # gone once it's done
+    assert not Path(line["qr"]).exists() and newer.read_bytes() == b"newer"   # only its own is gone
 
 
 def test_pair_json_says_why_it_cant(monkeypatch, capsys):
@@ -2023,3 +2056,31 @@ def test_the_firewall_check_counts_only_rules_that_let_the_phone_in(monkeypatch,
                      ("-A ufw-user-input -p tcp -d 10.0.0.5 -j ACCEPT", False)]:
         rules.write_text(line + "\n")
         assert (doctor.firewall_check(8735, lan, tailscale=False).status == doctor.OK) is ok, line
+
+
+def test_the_firewalls_list_of_apps_is_read_defensively():
+    from auren.mac import doctor as mac_doctor
+    assert mac_doctor.listed_apps(LISTAPPS.format(python="Block")) == {"/Applications/Spotify.app": "allowed",
+                                                                        "/u/python3.13": "blocked"}
+    assert mac_doctor.listed_apps("ALF: total number of apps = 0") == {}
+    assert mac_doctor.listed_apps("") is None and mac_doctor.listed_apps("python3.13 allowed") is None
+    assert mac_doctor.listed_apps("1 : /u/python3.13\n  ( something else )") == {"/u/python3.13": ""}
+
+
+def test_without_networksetup_a_mac_keeps_only_en_interfaces(monkeypatch):
+    """A failed or empty hardware list never widens what's listened on: a VirtualBox host-only network
+    (vboxnet0) or an interface with a name no list knows is dropped; en<N> is kept."""
+    from auren.mac import phone as mac_phone
+    extra = ("vboxnet0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n"
+             "\tinet 192.168.56.1 netmask 0xffffff00 broadcast 192.168.56.255\n"
+             "foo0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n"
+             "\tinet 192.168.77.1 netmask 0xffffff00 broadcast 192.168.77.255\n")
+    links = mac_phone.parse_ifconfig(IFCONFIG + extra)
+    for hardware in (None, set()):
+        assert mac_phone.pick_lan(links, hardware) == ["192.168.1.23", "10.20.30.40"]
+    assert mac_phone.hardware_ports("Hardware Port: Thunderbolt Bridge\nDevice: bridge0\n") == set()
+    assert mac_phone.hardware_ports(None) is None
+    answers = {mac_phone.IFCONFIG: IFCONFIG + extra, mac_phone.NETWORKSETUP: "VLAN Configurations\n"}
+    monkeypatch.setattr(mac_phone, "_run", lambda cmd: answers.get(cmd[0]))
+    assert mac_phone.lan_addresses() == (["192.168.1.23", "10.20.30.40"], "")
+    assert mac_phone.pick_lan(links, {"foo0", "en0"}) == ["192.168.1.23", "192.168.77.1"]   # listed: trusted

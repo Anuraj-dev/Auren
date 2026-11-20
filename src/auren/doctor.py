@@ -33,9 +33,9 @@ class Check:
     fix: str = ""
 
 
-def _run(cmd: list[str], timeout: float = 5) -> tuple[int, str]:
+def _run(cmd: list[str], timeout: float = 5, env: dict | None = None) -> tuple[int, str]:
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
         return p.returncode, (p.stdout or p.stderr).strip()
     except (OSError, subprocess.TimeoutExpired) as e:
         return 1, str(e)
@@ -397,7 +397,9 @@ def firewall_check(port: int, lan_ips: list[str], tailscale: bool) -> Check | No
 def _tailscale_lets_in() -> bool:
     """Does Tailscale's own firewall rule (ts-input: accept all on tailscale0) run ahead of ufw's?"""
     from . import phone
-    code, out = _run([phone.tailscale_cli() or "tailscale", "debug", "prefs"])
+    cmd = [phone.tailscale_cli() or "tailscale", "debug", "prefs"]
+    env = phone.tailscale_env()            # the Mac app's binary is the CLI only with TAILSCALE_BE_CLI=1
+    code, out = _run(cmd, env=env) if env else _run(cmd)
     try:
         return code == 0 and json.loads(out).get("NetfilterMode") == 2      # 2: on (1: nodivert, 0: off)
     except (ValueError, AttributeError):

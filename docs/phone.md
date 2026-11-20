@@ -76,19 +76,22 @@ paired (pairing or revoking the last phone starts a fresh conversation so the br
   with **Unpair**. It runs `auren phone pair --json` with Auren's own Python and reads the same files.
   The `auren phone` commands work in Terminal too.
 - **Addresses**: Wi-Fi and Ethernet (a USB or Thunderbolt adapter, an iPhone over USB) come from
-  `ifconfig`, kept only on the interfaces `networksetup -listallhardwareports` lists. Tunnels (`utun`,
+  `ifconfig`, kept only on the interfaces `networksetup -listallhardwareports` lists (if it doesn't
+  answer, only `en0`, `en1`...). Tunnels (`utun`,
   which is also Tailscale's), bridges (the Thunderbolt Bridge, Internet Sharing, VMs), AirDrop
   (`awdl`, `llw`) and link-local `169.254` addresses are left out, as on Omarchy.
 - **Tailscale**: the Mac app (from the App Store or tailscale.com) or Homebrew's `tailscale`. Auren
   finds its command in your PATH, in Homebrew's folders, or inside Tailscale.app, so the standalone app
-  needs no CLI installed. Turn Tailscale on from its menu bar icon.
+  needs no CLI installed (it's run with `TAILSCALE_BE_CLI=1`, which that binary needs to act as the
+  CLI). Turn Tailscale on from its menu bar icon.
 - **The firewall**: macOS's Application Firewall (System Settings → Network → Firewall) is off unless
   you turned it on. When it's on, the first time Auren listens for a phone (when you pair one) macOS
   asks whether **python3.x** (or **Auren**) may "accept incoming network connections". Click **Allow**.
   If you clicked Deny, or the phone can't connect: System Settings → Network → Firewall → **Options**,
   find python3.x or Auren in the list (add it with **+** if it isn't there) and set it to **Allow
   incoming connections**. **Block all incoming connections** stops every phone, whatever the list says.
-  `auren doctor`'s Phone section asks the firewall (`socketfilterfw`) and says which of these it is. A
+  `auren doctor`'s Phone section asks the firewall (`socketfilterfw`) and says which of these it is: it
+  says allowed only when the firewall is off or its list of apps allows Auren's Python or Auren.app. A
   reinstall that brings a new Python can make macOS ask again.
 - **Downloads and the clipboard**: an image shared to Auren is saved in `~/Downloads`; the PC clipboard
   action uses the Mac's pasteboard (an image goes on as PNG), and Open on PC uses `open`.

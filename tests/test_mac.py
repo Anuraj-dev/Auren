@@ -592,13 +592,16 @@ def test_the_phone_windows_pairing_follows_auren_phone_pair():
     assert p.stage == "paired"                                             # a pairing that ended well stays so
     p.start()
     p.line(json.dumps({"uri": uri, "qr": "/r/q.png", "expires": 1.0}))
-    assert p.cancel() == "s3cret-code_x" and p.stage == "" and p.code() == ""   # the code, to end it
+    assert p.cancel() == ("s3cret-code_x", "/r/q.png") and p.stage == "" and p.code() == ""   # to end it
     p.start()
     p.line(json.dumps({"error": "The phone server is off: the Auren daemon isn't running (auren service start)"}))
     assert p.stage == "error" and "auren service start" in p.note
     p.start()
-    p.exited()                                                             # died without a word
+    assert p.exited() == ("", "")                                          # died without a word
     assert p.stage == "error" and "auren doctor" in p.note
+    p.start()
+    p.line(json.dumps({"uri": uri, "qr": "/r/q2.png", "expires": 1.0}))
+    assert p.exited() == ("s3cret-code_x", "/r/q2.png") and p.stage == "error"   # died with a code up
     p.start()
     p.line(json.dumps({"expired": True}))
     assert p.stage == "expired" and "pair again" in p.note
@@ -656,10 +659,73 @@ def test_the_phone_window_pairs_cancels_and_unpairs_for_real(phone_files, monkey
     proc = ui._proc
     ui.cancelPairing()
     assert ui.pairStage == "" and until(lambda: ended == ["abc"])
-    assert until(lambda: proc.state() == proc.ProcessState.NotRunning)
+    assert ui.stopping
+    ui.startPairing()                                   # not while the old one stops: it would share its cleanup
+    assert ui.pairStage == "" and ui._proc is None
+    assert until(lambda: not ui.stopping) and proc.state() == proc.ProcessState.NotRunning
     ui.unpair(dev["id"])
     assert ui.unpairAsk == dev["id"] and phone.devices()                  # asks once more
     ui.unpair(dev["id"])
     assert until(lambda: ui.phones == []) and phone.devices() == []
     ui.closeWindow()
     assert not ui.open
+
+
+def test_the_phone_window_cleans_up_whatever_ends_the_pairing(phone_files, monkeypatch, tmp_path):
+    from auren.mac import phone_window as pw
+    phone = phone_files
+    ended = []
+    monkeypatch.setattr(phone, "end_pairing", ended.append)
+    mine = phone.pair_qr_file()
+    mine.write_bytes(b"png")
+    other = tmp_path / "picture.png"
+    other.write_bytes(b"png")
+    pw.cleanup("abc", str(mine))
+    pw.cleanup("", str(other))                        # not a pairing's QR file: it stays
+    assert ended == ["abc"] and not mine.exists() and other.exists()
+
+
+def test_a_pairing_child_that_dies_takes_its_code_and_qr_with_it(phone_files, monkeypatch, tmp_path):
+    """auren phone pair --json killed or crashed (no cleanup of its own): the window ends the code it showed
+    and deletes its QR code, and the next pairing can start at once."""
+    pytest.importorskip("PySide6")
+    import json
+    import sys
+    import time
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication
+
+    from auren.mac import phone_window as pw
+    app = QCoreApplication.instance() or QCoreApplication([])
+    phone = phone_files
+    qr = phone.pair_qr_file()
+    qr.parent.mkdir(parents=True, exist_ok=True)
+    qr.write_bytes(b"png")
+    child = tmp_path / "pair.py"
+    child.write_text("import json, os, time\n"
+                     f"print(json.dumps({{'uri': 'auren://pair?code=xyz', 'qr': {str(qr)!r}, 'expires': time.time() + 300,"
+                     " 'where': []}), flush=True)\n"
+                     "time.sleep(0.3)\nos._exit(9)\n")
+    monkeypatch.setattr(pw, "pair_command", lambda: (sys.executable, [str(child)]))
+    ended = []
+    monkeypatch.setattr(phone, "end_pairing", ended.append)
+    ui = pw.bridge(lambda: True)
+    ui.openWindow()
+    ui.startPairing()
+    end = time.time() + 10
+    while not (ended and not qr.exists()) and time.time() < end:
+        app.processEvents()
+        time.sleep(0.02)
+    assert ended == ["xyz"] and not qr.exists()
+    assert ui.pairStage == "error" and not ui.stopping and ui._proc is None
+    ui.startPairing()
+    assert ui.pairStage == "starting"
+    ui.stop()
+    assert json.dumps(ended)
+
+
+def test_the_mascot_quits_through_qt_on_sigterm():
+    """launchd stops the mascot with SIGTERM: Qt's aboutToQuit must run so an open pairing ends."""
+    src = (ROOT / "src/auren/mac/mascot.py").read_text()
+    assert "signal.signal(sig, lambda *_: app.quit())" in src and "(signal.SIGTERM, signal.SIGINT)" in src

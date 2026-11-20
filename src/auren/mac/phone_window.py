@@ -6,7 +6,8 @@ Unpair.
 It reads what the panel reads: the daemon's phone.json, and `auren phone devices`, `app`, `revoke` (called
 here in Python, on a thread when they take a lock or draw a QR code). Pairing runs `auren phone pair --json`
 as a child process (QProcess), with the venv's Python, and reads its JSON lines; Cancel stops it with
-SIGTERM, which ends the pairing (and, should it not answer, the code is ended here too).
+SIGTERM, which ends the pairing. However the child ends (cancelled, killed, crashed), the window also ends
+the code it showed and deletes that code's QR file, and a new pairing waits until the old child is gone.
 
 Everything but bridge() is plain Python, so the tests run it without Qt.
 """
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import sys
 import threading
+from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 from .. import phone
@@ -114,18 +116,24 @@ class Pairing:
             return ""
         return self.stage
 
-    def exited(self) -> None:
+    def exited(self) -> tuple[str, str]:
+        """The child ended. Returns what it showed, to clean up (cleanup): (code, QR file)."""
+        left = self.leftovers()
         if self.busy:
             self.stage, self.note = "error", "Pairing stopped. auren doctor says why."
         self.shown = {}
+        return left
 
-    def cancel(self) -> str:
-        """Cancel pressed: back to nothing. Returns the code that was showing ("" if none), for end_pairing."""
-        code = self.code()
+    def cancel(self) -> tuple[str, str]:
+        """Cancel pressed: back to nothing. Returns what was showing, to clean up: (code, QR file)."""
+        left = self.leftovers()
         if self.busy:
             self.stage = ""
         self.shown = {}
-        return code
+        return left
+
+    def leftovers(self) -> tuple[str, str]:
+        return self.code(), str(self.shown.get("qr") or "")
 
     def code(self) -> str:
         uri = self.shown.get("uri") or ""
@@ -139,6 +147,15 @@ def app_text(link: dict) -> str:
     return ((f"It downloads the Auren app {link['version']} for Android." if link.get("version")
              else "It opens Auren's latest release: download the auren-phone APK there.")
             + " Open the download and allow installing from your browser when Android asks. Then pair it here.")
+
+
+def cleanup(code: str, qr: str) -> None:
+    """End a pairing's code (only that one: a newer pairing stays) and delete its QR file (only a file
+    auren phone pair made for one pairing)."""
+    if code:
+        phone.end_pairing(code)
+    if qr and phone.is_pair_qr(qr):
+        Path(qr).unlink(missing_ok=True)
 
 
 def background(fn, *args) -> None:
@@ -163,6 +180,7 @@ def bridge(alive):
             self._alive = False
             self._pairing = Pairing()
             self._proc: QProcess | None = None
+            self._stopping: QProcess | None = None     # a cancelled child, until it has exited
             self._buf = b""
             self._app: dict = {}
             self._app_shown = False
@@ -193,6 +211,10 @@ def bridge(alive):
         @Property(str, notify=changed)
         def pairStage(self):
             return self._pairing.stage
+
+        @Property(bool, notify=changed)
+        def stopping(self):
+            return self._stopping is not None
 
         @Property(str, notify=changed)
         def pairNote(self):
@@ -310,7 +332,8 @@ def bridge(alive):
         # ---- pairing ---------------------------------------------------------------------------------
         @Slot()
         def startPairing(self) -> None:
-            if (self._proc and self._proc.state() != QProcess.ProcessState.NotRunning) or not self._pairing.start():
+            # Not while the last one is still stopping: its cleanup must not meet the new one's.
+            if self._stopping is not None or self._proc is not None or not self._pairing.start():
                 return
             self._app_shown, self._buf = False, b""
             proc = QProcess(self)
@@ -336,25 +359,32 @@ def bridge(alive):
             self.changed.emit()
 
         def _finished(self, proc) -> None:
+            if proc is self._stopping:               # a cancelled one is gone: a new pairing may start
+                self._stopping = None
+                proc.deleteLater()
+                self.changed.emit()
+                return
             if proc is not self._proc:
                 return
             self._read(proc)
-            self._pairing.exited()
+            left = self._pairing.exited()            # however it ended, its code and QR code go with it
+            background(cleanup, *left)
             self._proc = None
             proc.deleteLater()
             self._load_devices()
 
         def _failed(self, proc, err) -> None:
             if err == QProcess.ProcessError.FailedToStart and proc is self._proc:
-                self._pairing.exited()
+                background(cleanup, *self._pairing.exited())
                 self._proc = None
                 self.changed.emit()
 
         @Slot()
-        def cancelPairing(self) -> None:
-            code = self._pairing.cancel()
+        def cancelPairing(self, wait: bool = False) -> None:
+            left = self._pairing.cancel()
             proc, self._proc = self._proc, None
             if proc is not None and proc.state() != QProcess.ProcessState.NotRunning:
+                self._stopping = proc
                 proc.terminate()                     # SIGTERM: auren phone pair ends its code and exits
 
                 def kill():
@@ -364,17 +394,20 @@ def bridge(alive):
                     except RuntimeError:             # it stopped and is gone already
                         pass
                 QTimer.singleShot(STOP_WAIT, kill)
-                proc.finished.connect(lambda *_: proc.deleteLater())
-            if code:                                 # and here too, should it not have answered
-                background(phone.end_pairing, code)
+            elif proc is not None:
+                proc.deleteLater()
+            if wait:                                 # and here too, should it not answer
+                cleanup(*left)
+            else:
+                background(cleanup, *left)
             self.changed.emit()
 
         def stop(self) -> None:
-            """The mascot quits: a pairing that's open ends with it."""
+            """The mascot quits: a pairing that's open ends with it, before the process does."""
             proc = self._proc
-            self.cancelPairing()
-            if proc is not None:
-                proc.waitForFinished(2000)
+            self.cancelPairing(wait=True)
+            if proc is not None and not proc.waitForFinished(2000):
+                proc.kill()
 
         # ---- unpairing ---------------------------------------------------------------------------------
         @Slot(str)
