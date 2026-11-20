@@ -510,3 +510,156 @@ def test_the_menu_bar_offers_every_safety_level():
     menu = re.search(r'choices\("Safety", (\[.*?\]), "safety"\)', src, re.S).group(1)
     assert [v for v, _ in eval(menu)] == list(safety.LEVELS)
     assert ("free", "Auto") in eval(menu) and ("never", "Full access") in eval(menu)
+
+
+# --- the phone remote on macOS: the menu bar icon's Phone window ------------------------------------
+
+@pytest.fixture
+def phone_files(tmp_path, monkeypatch):
+    from auren import phone
+    d = tmp_path / "phone"
+    for name, value in {"PHONE_DIR": d, "DEVICES": d / "devices.json", "PAIRING": d / "pairing.json",
+                        "INBOX": d / "inbox.jsonl", "FILES": d / "files", "STATUS": tmp_path / "phone.json",
+                        "PAIR_QR": tmp_path / "phone-pair.png", "APP_QR": tmp_path / "phone-app.png",
+                        "TAILSCALE_SEEN": d / "tailscale.json"}.items():
+        monkeypatch.setattr(phone, name, value)
+    return phone
+
+
+def test_the_menu_bar_has_a_phone_window():
+    src = (ROOT / "src/auren/mac/mascot.py").read_text()
+    assert 'item("Phone…", phone_ui.openWindow)' in src
+    assert 'qml.with_name("mac-phone.qml")' in src and (ROOT / "mascot/mac-phone.qml").exists()
+    assert 'setContextProperty("phone", phone_ui)' in src and "aboutToQuit.connect(phone_ui.stop)" in src
+
+
+def test_the_phone_window_says_where_auren_listens():
+    from auren.mac import phone_window as pw
+    on = {"on": True, "addrs": [{"ip": "100.64.1.2", "via": "tailscale", "ok": True},
+                                {"ip": "192.168.1.23", "via": "lan", "ok": True},
+                                {"ip": "10.0.0.2", "via": "lan", "ok": False}]}
+    assert pw.status_text(on, alive=True) == "Listening on Tailscale (100.64.1.2) and Wi-Fi (192.168.1.23)."
+    assert pw.status_text(on, alive=False) == "Auren is off, so the phone can't reach it."
+    assert pw.status_text({}, True).startswith("Not listening: no phone is paired")
+    assert pw.status_text({"on": False, "idle": True}, True).startswith("Not listening: no phone is paired")
+    assert pw.status_text({"on": False, "why": "nowhere to listen"}, True) == "Not listening: nowhere to listen."
+    assert pw.tailscale_warn({"missing": {"tailscale": "Tailscale is off: turn it on"}}).startswith(
+        "Tailscale is off on this Mac")
+    assert pw.tailscale_warn({"missing": {"tailscale": "Tailscale isn't installed"}}) == ""
+    assert pw.tailscale_warn({}) == ""
+
+
+def test_the_phone_window_lists_phones_and_how_they_are_connected():
+    import time
+
+    from auren.mac import phone_window as pw
+    st = {"on": True, "connected": [{"id": "a1", "name": "Pixel", "via": "tailscale"}]}
+    rows = pw.phone_rows([{"id": "a1", "name": "Pixel", "created": time.time(), "lastSeen": time.time()},
+                          {"id": "b2", "name": "Tablet", "created": time.time() - 7200, "lastSeen": 0}], st)
+    assert rows[0] == {"id": "a1", "name": "Pixel", "connected": True,
+                       "detail": "Connected over Tailscale · paired just now"}
+    assert rows[1]["detail"] == "Last seen never · paired 2 h ago" and not rows[1]["connected"]
+    assert not pw.phone_rows([{"id": "a1", "name": "Pixel"}], {**st, "on": False})[0]["connected"]
+
+
+def test_the_phone_window_shows_qr_codes_from_the_runtime_folder():
+    import sys
+
+    from auren.mac import phone_window as pw
+    path = "/Users/me/Library/Application Support/auren-runtime/auren/phone-pair.png"
+    assert pw.file_url(path, 1795000000.5) == ("file:///Users/me/Library/Application%20Support/auren-runtime/auren/"
+                                               "phone-pair.png?1795000000.5")
+    assert pw.file_url("") == ""
+    program, args = pw.pair_command()                  # the venv's Python, as the mascot runs on it
+    assert program == sys.executable and args == ["-m", "auren.cli", "phone", "pair", "--json"]
+
+
+def test_the_phone_windows_pairing_follows_auren_phone_pair():
+    import json
+
+    from auren.mac import phone_window as pw
+    p = pw.Pairing()
+    assert p.start() and p.stage == "starting" and not p.start()          # one at a time
+    uri = "auren://pair?v=1&hosts=192.168.1.23%2C100.64.1.2&port=8735&code=s3cret-code_x&fp=ab&pc=mac"
+    assert p.line("not json") == "" and p.stage == "starting"
+    assert p.line(json.dumps({"uri": uri, "qr": "/r/phone-pair.png", "expires": 1.0, "warn": "",
+                              "where": [{"ip": "192.168.1.23", "via": "lan"}, {"ip": "100.64.1.2", "via": "tailscale"}]}))
+    assert p.stage == "showing" and p.code() == "s3cret-code_x"
+    assert p.where() == "Wi-Fi (192.168.1.23) or Tailscale (100.64.1.2)"
+    assert p.line(json.dumps({"paired": {"id": "a1", "name": "Pixel 9"}})) == "paired"
+    assert p.note == "Paired Pixel 9." and not p.busy
+    p.exited()
+    assert p.stage == "paired"                                             # a pairing that ended well stays so
+    p.start()
+    p.line(json.dumps({"uri": uri, "qr": "/r/q.png", "expires": 1.0}))
+    assert p.cancel() == "s3cret-code_x" and p.stage == "" and p.code() == ""   # the code, to end it
+    p.start()
+    p.line(json.dumps({"error": "The phone server is off: the Auren daemon isn't running (auren service start)"}))
+    assert p.stage == "error" and "auren service start" in p.note
+    p.start()
+    p.exited()                                                             # died without a word
+    assert p.stage == "error" and "auren doctor" in p.note
+    p.start()
+    p.line(json.dumps({"expired": True}))
+    assert p.stage == "expired" and "pair again" in p.note
+
+
+def test_get_the_app_text_names_the_version():
+    from auren.mac import phone_window as pw
+    assert pw.app_text({"version": "0.1.8"}).startswith("It downloads the Auren app 0.1.8 for Android.")
+    assert pw.app_text({}).startswith("It opens Auren's latest release")
+
+
+def test_the_phone_window_pairs_cancels_and_unpairs_for_real(phone_files, monkeypatch, tmp_path):
+    """The Qt bridge itself, with a stand-in for auren phone pair --json (where PySide6 is: the macOS job)."""
+    pytest.importorskip("PySide6")
+    import json
+    import os
+    import sys
+    import time
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication
+
+    from auren.mac import phone_window as pw
+    app = QCoreApplication.instance() or QCoreApplication([])
+    phone = phone_files
+    code, _ = phone.start_pairing()
+    dev, _ = phone.pair(code, "Pixel")
+    child = tmp_path / "pair.py"
+    child.write_text("import json, signal, sys, time\n"
+                     "signal.signal(signal.SIGTERM, lambda *_: (print(json.dumps({'cancelled': True}), flush=True),"
+                     " sys.exit(130)))\n"
+                     f"print(json.dumps({{'uri': 'auren://pair?code=abc', 'qr': {str(tmp_path / 'q.png')!r},"
+                     " 'expires': time.time() + 300, 'where': [{'ip': '192.168.1.23', 'via': 'lan'}]}), flush=True)\n"
+                     "time.sleep(30)\n")
+    monkeypatch.setattr(pw, "pair_command", lambda: (sys.executable, [str(child)]))
+    ended = []
+    monkeypatch.setattr(phone, "end_pairing", ended.append)
+    ui = pw.bridge(lambda: True)
+
+    def until(cond, secs=10):
+        end = time.time() + secs
+        while not cond() and time.time() < end:
+            app.processEvents()
+            time.sleep(0.02)
+        return cond()
+    ui.openWindow()
+    assert ui.open and [p["name"] for p in ui.phones] == ["Pixel"]
+    phone.STATUS.write_text(json.dumps({"on": True, "addrs": [{"ip": "192.168.1.23", "via": "lan", "ok": True}]}))
+    os.utime(phone.STATUS, ns=(1, 1))
+    ui.poll()
+    assert ui.status == "Listening on Wi-Fi (192.168.1.23)."
+    ui.startPairing()
+    assert until(lambda: ui.pairStage == "showing"), ui.pairStage
+    assert ui.pairWhere == "Wi-Fi (192.168.1.23)" and ui.pairQr.startswith("file://")
+    proc = ui._proc
+    ui.cancelPairing()
+    assert ui.pairStage == "" and until(lambda: ended == ["abc"])
+    assert until(lambda: proc.state() == proc.ProcessState.NotRunning)
+    ui.unpair(dev["id"])
+    assert ui.unpairAsk == dev["id"] and phone.devices()                  # asks once more
+    ui.unpair(dev["id"])
+    assert until(lambda: ui.phones == []) and phone.devices() == []
+    ui.closeWindow()
+    assert not ui.open
