@@ -51,6 +51,10 @@ Spotlight, or with `auren open`. `auren doctor` checks the same things in a term
 Until `auren setup` has run, `auren` only says to run it. Run it again any time: it keeps your
 settings, keys and voice model.
 
+Installed from a clone before? Run `$(brew --prefix)/bin/auren setup` once (the old `auren` in
+`~/.local/bin` may come first on your PATH). It moves that `auren` and `auren-ctl` over to Homebrew's and
+keeps your settings, keys and voice model.
+
 ### From a clone
 
 The other way, and the one for working on Auren, is to run the installer from a clone. It does what
@@ -130,7 +134,9 @@ what it replaces, so everything else (the brain, safety, speech, the tool defini
 `auren update` checks for a new release and installs it in the background, as on Omarchy. Installed
 with Homebrew, it waits until Auren is idle, stops it, runs `brew update` and `brew upgrade auren` (no
 password needed), runs `auren setup` for the new version without asking anything, and starts Auren
-again. If that setup fails, it sets up the version that was there again.
+again. If that setup fails, it sets up the version that was there again, from a copy `auren setup` keeps
+in `~/.cache/auren/brew-rollback` (Homebrew removes the old version's own files). If Homebrew already
+has a newer version (after a `brew upgrade` on its own), `auren update` sets it up without GitHub.
 
 `brew upgrade` on its own (or as part of upgrading everything) updates Homebrew's copy only. Auren keeps
 running the version it was set up with, and each `auren` command reminds you to run `auren setup` to finish.
@@ -144,7 +150,7 @@ Installed from a clone, Auren updates from its own clone in `~/.cache/auren/sour
 auren service uninstall
 auren app uninstall
 brew uninstall auren                          # from a clone instead: rm ~/.local/bin/auren ~/.local/bin/auren-ctl
-rm -rf ~/.local/share/auren
+rm -rf ~/.local/share/auren "$HOME/Library/Application Support/Auren"
 rm -rf ~/.config/auren ~/.local/state/auren ~/.cache/auren      # your settings and history too
 ```
 

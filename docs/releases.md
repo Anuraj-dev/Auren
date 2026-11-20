@@ -33,9 +33,10 @@ with `yay -Syu` updates Auren too; restart it afterwards (pacman's message says 
 check` compares the installed version with the latest release, like the Arch package, and also offers a
 newer version Homebrew has already (after a `brew upgrade` that wasn't followed by `auren setup`).
 Updating runs in the background: it waits until Auren is idle, stops its launch agents, runs `brew
-update` and `brew upgrade auren`, runs the new version's installer, and starts Auren again as it was. The
-upgrade keeps the old version's folder (`HOMEBREW_NO_INSTALL_CLEANUP`), so a failed install sets the old
-version up again from it. A release the tap doesn't have yet changes nothing. A Homebrew install never
+update` and `brew upgrade auren`, runs the new version's installer, and starts Auren again as it was. `auren setup` keeps a copy of the source it set up in `~/.cache/auren/brew-rollback/<version>`, outside
+the Cellar, and a failed install sets the old version up again from there (the update makes the copy
+first if it's missing, and changes nothing if it can't). A version Homebrew has already is set up
+without GitHub. A release the tap doesn't have yet changes nothing. A Homebrew install never
 uses the git clone below, and a clone's install never runs brew.
 
 ### install.sh installs
@@ -91,7 +92,9 @@ It is a regular GitHub release so the release-only updater can discover it.
    tag's source tarball and its `sha256` to the tarball's checksum, and pushes it to
    `kvm404/homebrew-auren` as `Formula/auren.rb`. Check that it passed and that `brew info
    kvm404/auren/auren` (after `brew update`) shows the new version. If it failed, fix the cause and run
-   it again from Actions (`brew`, with the tag).
+   it again from Actions (`brew`, with the tag). It refuses to replace a newer version in the tap
+   (publishing the same version again is fine); to go back to an older one on purpose, run it with
+   `force`.
 7. Run `auren update check` from an existing install and verify the tag. Check that a clean
    `yay -S auren` works, and on a Mac `brew install kvm404/auren/auren` then `auren setup`. Confirm later
    pushes to `main` leave the installed release current.

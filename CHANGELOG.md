@@ -13,6 +13,10 @@
 
 ### Changed
 
+- Auren.app finds Auren's Python through a link in `~/Library/Application Support/Auren`, so opening it
+  from Finder works with any data folder. The app changes, so the next install rebuilds it and macOS asks
+  for its permissions again.
+
 - The browser tools click and type with real input in the page, not script events, so `browser_type`
   works in rich text boxes (Google Docs, Notion, Gmail, X, Slack, WhatsApp Web) and clicks work on sites
   that ignore script clicks. Your own mouse and keyboard aren't used. Rich text boxes are listed as
